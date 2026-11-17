@@ -14,7 +14,10 @@ x-application: &application
 
 services:
   db:
-    image: mysql:8.4
+    image: smart-timetable-mysql:8.4.13-bookworm
+    build:
+      context: .
+      dockerfile: Dockerfile.mysql
     restart: unless-stopped
     environment:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env}

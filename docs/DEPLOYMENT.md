@@ -9,6 +9,8 @@ This guide covers Smart Shift Planner, whose deployed application and Compose pr
 - Outbound access to npm/container registries while building, and subscribed holiday feeds/webhook destinations at runtime.
 - A host port for nginx. Only `web` publishes a port; MySQL and the API stay inside the Compose network.
 
+Compose builds `smart-timetable-mysql:8.4.13-bookworm` from `Dockerfile.mysql`, using Oracle's signed MySQL 8.4 packages on Debian. This supports older CPU feature sets, including QEMU guests without x86-64-v2 support; the upstream `mysql:8.4` Oracle Linux image can fail before starting on these hosts. Keep this database image built and current alongside the application images. For image-only deployment, see the [Portainer guide](PORTAINER.md).
+
 On the existing machine, Docker access can require `sg docker -c 'docker compose …'`. Use that existing group access; do not change Docker socket permissions. Commands below use ordinary `docker compose` for readability.
 
 ## New installation
@@ -169,6 +171,7 @@ Application rollback is a controlled return to a known source revision. Check sc
 | “Assignment changed” / restore version conflict | Refresh the calendar or reopen the request/restore preview. Review current duty before retrying. |
 | Cancelled moved night does not return through group editing | Group edits preserve exceptions. Open the approved request and use **Revert approved change** with its cancellation confirmation. |
 | API is unavailable after an upgrade | Inspect `migrate` exit status, then database/API logs. Fix the cause before retrying the migration; preserve the volume. |
+| Database exits with “CPU does not support x86-64-v2” | Use the current Compose file and rebuild `db` with `docker compose build db`. For Portainer, build `Dockerfile.mysql` and use its local image as described in the Portainer guide. Preserve the database volume and credentials. |
 | Holiday feed refresh fails | Check the subscription error, public HTTPS URL, network access, and supported recurrence rules. Cached holidays remain available. |
 | Webhook is rejected or unreadable | Check allowed HTTPS origins, receiver verification, delivery history, and the original `APP_SECRET`. Do not rotate the secret as a troubleshooting shortcut. |
 | API token cannot read a phone number | Grant both `on_call:read` and `contact:phone`; see [API examples](API.md). |

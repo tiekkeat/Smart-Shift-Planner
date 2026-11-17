@@ -5,6 +5,7 @@ Smart Shift Planner runs one shared support duty roster with engineer duty assig
 The deployed interface may display **Smart Timetable** or an administrator's custom branding. The repository name does not change existing installation names, database volumes, or branding.
 
 - [Deployment and upgrades](docs/DEPLOYMENT.md): local/LAN/HTTPS setup, environment settings, backups, restore, and troubleshooting.
+- [Portainer deployment](docs/PORTAINER.md): build local images and deploy an image-only stack on the same Docker host.
 - [Integration API](docs/API.md): Bearer authentication, on-duty phone lookup, schedule queries, and webhook verification.
 - [Project instructions](AGENTS.md): source map, validation requirements, and roster invariants for contributors and Codex.
 

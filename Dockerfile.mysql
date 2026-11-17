@@ -1,0 +1,31 @@
+# Only copy the upstream shell entrypoint; do not run its Oracle Linux binaries.
+FROM mysql:8.4.13 AS upstream
+
+FROM debian:bookworm-slim
+ARG MYSQL_VERSION=8.4.13-1debian12
+ENV MYSQL_MAJOR=8.4 MYSQL_VERSION=${MYSQL_VERSION}
+
+# Debian's baseline amd64 userspace also runs on VMs without x86-64-v2.
+# Install real MySQL 8.4, retaining the existing data format and MYSQL_* setup.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gosu bzip2 xz-utils zstd; \
+    curl -fsSL https://repo.mysql.com/RPM-GPG-KEY-mysql-2025 -o /usr/share/keyrings/mysql.asc; \
+    echo 'a4bcd9f16a53cc763f87b9955dbcdced33c7aa90296b157eb6ceef0f156f4327  /usr/share/keyrings/mysql.asc' | sha256sum -c -; \
+    echo 'deb [signed-by=/usr/share/keyrings/mysql.asc] https://repo.mysql.com/apt/debian/ bookworm mysql-8.4-lts' > /etc/apt/sources.list.d/mysql.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      mysql-community-server-core="${MYSQL_VERSION}" \
+      mysql-community-client="${MYSQL_VERSION}"; \
+    rm -rf /var/lib/apt/lists/*; \
+    groupadd --system --gid 999 mysql; \
+    useradd --system --uid 999 --gid mysql --home-dir /var/lib/mysql --no-create-home mysql; \
+    mkdir -p /var/lib/mysql /var/lib/mysql-files /var/run/mysqld /docker-entrypoint-initdb.d; \
+    chown -R mysql:mysql /var/lib/mysql /var/lib/mysql-files /var/run/mysqld; \
+    chmod 1777 /var/run/mysqld
+
+COPY docker/mysql.cnf /etc/mysql/my.cnf
+COPY --from=upstream /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+EXPOSE 3306 33060
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["mysqld"]

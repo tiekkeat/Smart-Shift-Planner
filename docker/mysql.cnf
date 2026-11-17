@@ -1,0 +1,9 @@
+[client]
+socket=/var/run/mysqld/mysqld.sock
+
+[mysqld]
+datadir=/var/lib/mysql
+socket=/var/run/mysqld/mysqld.sock
+pid-file=/var/run/mysqld/mysqld.pid
+secure-file-priv=/var/lib/mysql-files
+skip-name-resolve
