@@ -1,0 +1,361 @@
+import { registerHooks } from 'node:module'
+import { readFileSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
+import { randomUUID } from 'node:crypto'
+import test from 'node:test'
+import Fastify from 'fastify'
+import assert from 'node:assert/strict'
+
+const database = new DatabaseSync(':memory:')
+// Exercise the actual roster queries and transactions with a disposable SQLite database.
+// MySQL's row locking and delivery worker still require a MySQL integration run.
+const schema = readFileSync(new URL('../server/schema.sql', import.meta.url), 'utf8')
+  .replaceAll('\r\n', '\n')
+  .replaceAll(/ENUM\([^)]*\)/g, 'TEXT')
+  .replaceAll(/^  INDEX \([^\n]*\),?\n/gm, '')
+  .replaceAll(/,\n\);/g, '\n);')
+  .replace('INSERT IGNORE', 'INSERT OR IGNORE')
+database.exec(schema)
+async function query(sql, bindings = []) {
+  const statement = database.prepare(sql)
+  if (/^\s*SELECT\b/i.test(sql)) return statement.all(...bindings)
+  const result = statement.run(...bindings)
+  return { ...result, affectedRows: result.changes }
+}
+
+let previous = Promise.resolve()
+function rosterWrite(work) {
+  const transaction = previous.then(async () => {
+    database.exec('BEGIN')
+    try {
+      const result = await work(query)
+      database.exec('COMMIT')
+      return result
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+  })
+  previous = transaction.catch(() => {})
+  return transaction
+}
+
+const fixtureKey = Symbol.for('smart-timetable.test.database')
+globalThis[fixtureKey] = { query, rosterWrite }
+const productionDb = new URL('../server/db.js', import.meta.url).href
+const fixture = 'data:text/javascript,' + encodeURIComponent(
+  "export const { query, rosterWrite } = globalThis[Symbol.for('smart-timetable.test.database')]",
+)
+const hooks = registerHooks({
+  resolve(specifier, context, nextResolve) {
+    const result = nextResolve(specifier, context)
+    return result.url === productionDb ? { url: fixture, shortCircuit: true } : result
+  },
+})
+const { cancelShift, listChanges, onCall, report, requestChange, reviewChange, previewRevert, revertChange, saveShift, reorderShift } = await import('../server/roster.js')
+const { savePerson, listPeople, deletePerson } = await import('../server/accounts.js')
+const {registerTeams,memberships} = await import('../server/teams.js')
+const { registerIntegrations } = await import('../server/integrations.js')
+const { saveGroup, readGroup, cancelGroup } = await import('../server/group-service.js')
+hooks.deregister()
+delete globalThis[fixtureKey]
+
+async function addUser(name, role = 'engineer') {
+  const user = { id: randomUUID(), role, name }
+  await query('INSERT INTO users (id, name, email, phone, role, password_hash) VALUES (?, ?, ?, ?, ?, ?)', [
+    user.id, name, name.toLowerCase() + '@example.com', '+60123456789', role, 'test',
+  ])
+  return user
+}
+
+const day = 86_400_000
+const start = Date.now() + day
+const time = (hour) => new Date(start + hour * 3_600_000).toISOString()
+const assignment = (engineer, from, to) => ({ engineerId: engineer.id, start: time(from), end: time(to), note: '' })
+
+test('one primary assignment, exact handoff, approval, rollback, reporting and delivery queue', async () => {
+  const admin = await addUser('Admin', 'admin')
+  const aisha = await addUser('Aisha')
+  const daniel = await addUser('Daniel')
+  await query('INSERT INTO webhooks (id, name, url, encrypted_secret, created_at) VALUES (?, ?, ?, ?, ?)', [
+    randomUUID(), 'Test webhook', 'https://example.com/hook', 'dummy', Date.now(),
+  ])
+
+  const first = await saveShift(admin, assignment(aisha, 0, 7))
+  const second = await saveShift(admin, assignment(daniel, 7, 9))
+  assert.equal((await onCall(start)).id, first.id)
+  assert.equal((await onCall(Date.parse(time(7)))).id, second.id)
+  assert.equal(await onCall(Date.parse(time(9))), undefined)
+
+  await assert.rejects(saveShift(admin, assignment(aisha, 5, 8)), { statusCode: 409 })
+  const firstSix = await report(aisha, start, Date.parse(time(6)))
+  assert.equal(firstSix[0].durationMs, 6 * 3_600_000)
+  const remaining = await report(admin, Date.parse(time(6)), Date.parse(time(9)))
+  assert.deepEqual(remaining.map(({ name, durationMs }) => [name, durationMs / 3_600_000]), [['Daniel', 2], ['Aisha', 1]])
+
+  const proposed = { ...assignment(daniel, 0, 7), shiftId: first.id, version: first.version, reason: 'Swap coverage' }
+  await assert.rejects(requestChange(daniel, proposed), { statusCode: 403 })
+  const request = await requestChange(aisha, proposed)
+  assert.equal((await onCall(start)).engineer_id, aisha.id)
+  assert.equal((await listChanges(aisha))[0].status, 'pending')
+  assert.equal((await listChanges(daniel)).length, 0)
+  await reviewChange(admin, request.id, 'approved', 'Agreed')
+  assert.equal((await onCall(start)).engineer_id, daniel.id)
+  assert.equal((await listChanges(aisha))[0].status, 'approved')
+  await assert.rejects(reviewChange(admin, request.id, 'rejected', ''), { statusCode: 409 })
+
+  const stale = await requestChange(daniel, {
+    ...assignment(aisha, 7, 9), shiftId: second.id, version: second.version, reason: 'Swap coverage',
+  })
+  await saveShift(admin, { ...assignment(daniel, 7, 10), version: second.version }, second.id)
+  await assert.rejects(reviewChange(admin, stale.id, 'approved', ''), { statusCode: 409 })
+  assert.equal((await listChanges(daniel))[0].status, 'pending')
+  await cancelShift(admin, second.id, 2)
+  assert.equal(await onCall(Date.parse(time(7))), undefined)
+  await assert.rejects(cancelShift(admin, second.id, 2), { statusCode: 404 })
+
+  const [outbox] = await query('SELECT COUNT(*) AS count FROM webhook_deliveries')
+  assert.equal(outbox.count, 5)
+  const [messages] = await query('SELECT COUNT(*) AS count FROM notifications WHERE user_id = ?', [aisha.id])
+  assert.equal(messages.count, 3)
+  const overlapping = { ...assignment(aisha, 1, 3), color: 'pink' }
+  await assert.rejects(saveShift(admin, overlapping), { statusCode: 409 })
+  const allowed = await saveShift(admin, { ...overlapping, allowOverlap: true })
+  assert.equal(allowed.color, 'pink')
+  assert.equal((await onCall(Date.parse(time(2)))).id, allowed.id)
+  const moved = await saveShift(admin, { ...assignment(aisha, 2, 4), color: 'green', allowOverlap: true, version: allowed.version }, allowed.id)
+  assert.equal(moved.start, time(2))
+  assert.equal(moved.end, time(4))
+  assert.equal(moved.color, 'green')
+  await assert.rejects(saveShift(admin, { ...assignment(aisha, 2, 4), allowOverlap: true, version: allowed.version }, allowed.id), { statusCode: 409 })
+  const [deliveriesBeforeOrder] = await query('SELECT COUNT(*) AS total FROM webhook_deliveries')
+  await reorderShift(admin, allowed.id, first.id, 'before')
+  const [ordered] = await query('SELECT * FROM shifts WHERE id = ?', [allowed.id])
+  const [original] = await query('SELECT * FROM shifts WHERE id = ?', [first.id])
+  assert.ok(ordered.display_order < original.display_order)
+  assert.equal(ordered.starts_at, Date.parse(moved.start))
+  assert.equal(ordered.ends_at, Date.parse(moved.end))
+  assert.equal(ordered.version, moved.version)
+  await reorderShift(admin, allowed.id, first.id, 'after')
+  const [below] = await query('SELECT display_order FROM shifts WHERE id = ?', [allowed.id])
+  assert.ok(below.display_order > original.display_order)
+  const [deliveriesAfterOrder] = await query('SELECT COUNT(*) AS total FROM webhook_deliveries')
+  assert.equal(deliveriesAfterOrder.total, deliveriesBeforeOrder.total)
+  await assert.rejects(reorderShift(admin, allowed.id, allowed.id, 'before'), {statusCode:400})
+  await assert.rejects(reorderShift(admin, allowed.id, second.id, 'before'), {statusCode:404})
+  const overlapRequest = await requestChange(aisha, {
+    ...assignment(aisha, 3, 5), shiftId: allowed.id, version: moved.version,
+    reason: 'Overlap review check', allowOverlap: true,
+  })
+  await assert.rejects(reviewChange(admin, overlapRequest.id, 'approved', ''), { statusCode: 409 })
+  await reviewChange(admin, overlapRequest.id, 'approved', '', true)
+  const [afterReview] = await query('SELECT color, version FROM shifts WHERE id = ?', [allowed.id])
+  assert.equal(afterReview.color, 'green')
+  await cancelShift(admin, allowed.id, afterReview.version)
+  const account = { name: 'Aisha', email: 'aisha@example.com', phone: '+60123456789', dingtalkId: '', role: 'engineer', active: true, password: '', color: 'purple' }
+  await savePerson(admin, account, aisha.id)
+  assert.equal((await listPeople(admin)).find((person) => person.id === aisha.id).color, 'purple')
+  await savePerson({ id: admin.id, role: 'manager' }, { ...account, color: 'green' }, aisha.id)
+  assert.equal((await listPeople(aisha)).find((person) => person.id === aisha.id).color, 'purple')
+  const app = Fastify()
+  registerIntegrations(app, (action) => (request, reply) => action(admin, request, reply))
+  const issued = await app.inject({method:'POST',url:'/api/app/tokens',payload:{name:'Delete test',scopes:['on_call:read'],expiresInDays:1}})
+  assert.equal(issued.statusCode,201)
+  const token = issued.json()
+  assert.equal((await app.inject({method:'DELETE',url:'/api/app/tokens/'+token.id+'/permanent'})).statusCode,409)
+  assert.equal((await app.inject({method:'DELETE',url:'/api/app/tokens/'+token.id})).statusCode,204)
+  assert.equal((await app.inject({method:'DELETE',url:'/api/app/tokens/'+token.id+'/permanent'})).statusCode,204)
+  assert.equal((await app.inject({method:'GET',url:'/api/app/tokens'})).json().length,0)
+  assert.equal((await app.inject({method:'GET',url:'/api/v1/on-call',headers:{authorization:'Bearer '+token.token}})).statusCode,401)
+  assert.equal((await query("SELECT id FROM audit_log WHERE entity_id = ? AND action = 'token.deleted'",[token.id])).length,1)
+  await app.close()
+  const pattern={engineerId:aisha.id,firstDate:'2040-01-02',lastDate:'2040-01-06',weekdays:[1,2,3,4,5],startTime:'18:30',endTime:'09:00',endDayOffset:1,timezone:'Asia/Kuala_Lumpur',note:'Night group'}
+  const source=await saveShift(admin,{engineerId:aisha.id,start:'2040-01-02T18:30:00+08:00',end:'2040-01-07T09:00:00+08:00',note:'Continuous original'})
+  const weekend=await saveShift(admin,{engineerId:aisha.id,start:'2040-01-07T09:00:00+08:00',end:'2040-01-08T09:00:00+08:00',note:'Weekend'})
+  let group=await saveGroup(admin,{...pattern,sourceShiftId:source.id,sourceVersion:source.version})
+  assert.equal(group.occurrences.length,5)
+  assert.equal(group.totalHours,72.5)
+  assert.equal((await query('SELECT cancelled FROM shifts WHERE id=?',[source.id]))[0].cancelled,1)
+  assert.equal(await onCall(Date.parse('2040-01-03T09:00:00+08:00')),undefined)
+  assert.equal((await onCall(Date.parse('2040-01-03T18:30:00+08:00'))).group_id,group.id)
+  assert.equal((await onCall(Date.parse('2040-01-07T09:00:00+08:00'))).id,weekend.id)
+  assert.equal((await report(aisha,Date.parse(group.start),Date.parse(group.end)))[0].durationMs,72.5*3600000)
+  const changed=group.occurrences[1]
+  await saveShift(admin,{engineerId:daniel.id,start:changed.start,end:changed.end,note:'Individual exception',version:changed.version},changed.id)
+  await assert.rejects(saveGroup(admin,{...pattern,version:group.version},group.id),{statusCode:409})
+  group=await readGroup(group.id)
+  assert.equal(group.occurrences.find(o=>o.id===changed.id).isException,true)
+  group=await saveGroup(admin,{...pattern,version:group.version,startTime:'19:00'},group.id)
+  assert.equal(group.occurrences.find(o=>o.id===changed.id).engineerId,daniel.id)
+  assert.equal(group.occurrences.find(o=>o.id===changed.id).start,changed.start)
+  await assert.rejects(saveGroup(admin,{...group.rule,version:group.version,weekdays:[1]},group.id),{statusCode:409})
+  const edited=group.occurrences[2]
+  const req=await requestChange(aisha,{engineerId:daniel.id,start:edited.start,end:edited.end,shiftId:edited.id,version:edited.version,reason:'Cover this night'})
+  await reviewChange(admin,req.id,'approved','Approved')
+  group=await readGroup(group.id)
+  assert.equal(group.occurrences.find(o=>o.id===edited.id).isException,true)
+  const cancelled=group.occurrences[3]
+  await cancelShift(admin,cancelled.id,cancelled.version)
+  group=await readGroup(group.id)
+  const nextRule={...group.rule,firstDate:'2040-01-09',lastDate:'2040-01-13'}
+  group=await saveGroup(admin,{...nextRule,version:group.version,moveDays:7},group.id)
+  assert.equal(group.occurrences.find(o=>o.id===changed.id).start,'2040-01-10T10:30:00.000Z')
+  assert.equal(group.occurrences.find(o=>o.id===cancelled.id).cancelled,true)
+  assert.equal(group.occurrences.find(o=>o.id===cancelled.id).occurrenceDate,'2040-01-12')
+  const daytime=await saveShift(admin,{engineerId:daniel.id,start:'2040-01-10T09:00:00+08:00',end:'2040-01-10T18:30:00+08:00',note:'Day duty'})
+  assert.ok(daytime.id)
+  const conflictPattern={...pattern,firstDate:'2040-01-09',lastDate:'2040-01-13'}
+  await assert.rejects(saveGroup(admin,conflictPattern),{statusCode:409})
+  assert.equal((await query('SELECT id FROM duty_groups WHERE cancelled=0')).length,1)
+  const duplicates=await saveGroup(admin,{...conflictPattern,allowOverlap:true})
+  assert.equal(duplicates.occurrences.length,5)
+  await cancelGroup(admin,duplicates.id,duplicates.version)
+  await cancelGroup(admin,group.id,group.version)
+  assert.equal((await query('SELECT id FROM shifts WHERE group_id=? AND cancelled=0',[group.id])).length,0)
+  const viewerFields={name:'Read Only',email:'viewer@example.com',phone:'',dingtalkId:'',role:'viewer',active:true,password:randomUUID()}
+  const viewer=await savePerson(admin,viewerFields)
+  assert.equal((await listPeople(admin)).find(p=>p.id===viewer.id).role,'viewer')
+  const publicPeople=await listPeople({id:viewer.id,role:'viewer'})
+  assert.ok(publicPeople.every(p=>p.role==='engineer'&&!Object.hasOwn(p,'email')&&!Object.hasOwn(p,'phone')))
+  assert.throws(()=>requestChange({id:viewer.id,role:'viewer'},{}),{statusCode:403})
+  assert.throws(()=>deletePerson({id:admin.id,role:'manager'},viewer.id),{statusCode:403})
+  assert.throws(()=>deletePerson(admin,admin.id),{statusCode:400})
+  await assert.rejects(deletePerson(admin,aisha.id),{statusCode:409})
+  await query('INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?,?,?)',['viewer-session',viewer.id,Date.now()+60000])
+  await deletePerson(admin,viewer.id)
+  const [deleted]=await query('SELECT * FROM users WHERE id=?',[viewer.id])
+  assert.equal(deleted.active,0);assert.ok(deleted.deleted_at);assert.notEqual(deleted.email,viewerFields.email)
+  assert.equal((await query('SELECT * FROM sessions WHERE user_id=?',[viewer.id])).length,0)
+  assert.ok(!(await listPeople(admin)).some(p=>p.id===viewer.id))
+  await assert.rejects(savePerson(admin,{...viewerFields,password:''},viewer.id),{statusCode:404})
+  const replacement=await savePerson(admin,viewerFields)
+  assert.notEqual(replacement.id,viewer.id)
+  const retiree=await addUser('Retired Engineer')
+  const history=await saveShift(admin,{engineerId:retiree.id,start:'2000-01-01T00:00:00Z',end:'2000-01-01T01:00:00Z',note:'Past duty'})
+  await deletePerson(admin,retiree.id)
+  assert.equal((await query('SELECT u.name FROM shifts s JOIN users u ON u.id=s.engineer_id WHERE s.id=?',[history.id]))[0].name,retiree.name)
+  assert.equal((await query("SELECT id FROM audit_log WHERE entity_id=? AND action='account.deleted'",[retiree.id])).length,1)
+  const teamApp=Fastify()
+  const asAdmin=action=>(request,reply)=>action(admin,request,reply)
+  registerTeams(teamApp,asAdmin,asAdmin)
+  let teamResponse=await teamApp.inject({method:'POST',url:'/api/app/teams',payload:{name:'Cloud',color:'blue'}})
+  assert.equal(teamResponse.statusCode,201)
+  const cloud=teamResponse.json()
+  teamResponse=await teamApp.inject({method:'POST',url:'/api/app/teams',payload:{name:'Security',color:'green'}})
+  const security=teamResponse.json()
+  assert.equal((await teamApp.inject({method:'POST',url:'/api/app/teams',payload:{name:' cloud ',color:'pink'}})).statusCode,409)
+  await savePerson(admin,{...account,teamIds:[cloud.id,security.id,cloud.id]},aisha.id)
+  assert.deepEqual(new Set((await memberships())[aisha.id]),new Set([cloud.id,security.id]))
+  await savePerson(admin,account,aisha.id)
+  assert.equal((await memberships())[aisha.id].length,2)
+  await assert.rejects(savePerson(admin,{...account,name:'Should rollback',teamIds:[randomUUID()]},aisha.id),{statusCode:400})
+  assert.equal((await query('SELECT name FROM users WHERE id=?',[aisha.id]))[0].name,'Aisha')
+  assert.equal((await memberships())[aisha.id].length,2)
+  await savePerson({id:admin.id,role:'manager'},{...account,teamIds:[security.id]},aisha.id)
+  assert.deepEqual((await memberships())[aisha.id],[security.id])
+  assert.equal((await teamApp.inject({method:'DELETE',url:'/api/app/teams/'+security.id})).statusCode,204)
+  assert.equal((await memberships())[aisha.id],undefined)
+  assert.ok((await query('SELECT id FROM shifts WHERE engineer_id=?',[aisha.id])).length>0)
+  await teamApp.close()
+  // Swaps exchange two exact intervals atomically, including repeated nights.
+  const kong = await addUser('Swap Kong')
+  const yong = await addUser('Swap Yong')
+  const swapRule = { engineerId: kong.id, firstDate:'2042-11-24', lastDate:'2042-11-24', weekdays:[1,2,3,4,5,6,7], startTime:'18:30', endTime:'09:00', endDayOffset:1, timezone:'Asia/Kuala_Lumpur', note:'Kong night', color:null }
+  const kongGroup = await saveGroup(admin, swapRule)
+  const yongGroup = await saveGroup(admin, { ...swapRule, engineerId:yong.id, firstDate:'2042-11-30', lastDate:'2042-11-30', note:'Yong night' })
+  const originalKong = kongGroup.occurrences[0], originalYong = yongGroup.occurrences[0]
+  const swapInput = { engineerId:kong.id, shiftId:originalKong.id, version:originalKong.version, start:originalYong.start, end:originalYong.end, swapShiftId:originalYong.id, swapVersion:originalYong.version, reason:'Exchange night duties' }
+  await assert.rejects(requestChange(yong, swapInput), {statusCode:403})
+  await assert.rejects(requestChange(kong, {...swapInput, swapVersion:99}), {statusCode:409})
+  await assert.rejects(requestChange(kong, {...swapInput, engineerId:yong.id}), {statusCode:400})
+  const swapRequest = await requestChange(kong, swapInput)
+  assert.equal((await listChanges(kong)).find(item=>item.id===swapRequest.id).swap.id, originalYong.id)
+  await assert.rejects(requestChange(yong, {engineerId:yong.id, shiftId:originalYong.id, version:originalYong.version, start:time(9000),end:time(9001),reason:'Competing request'}), {statusCode:409})
+  const obstruction = await saveShift(admin, {engineerId:kong.id,start:originalKong.start,end:originalKong.end,note:'Third shift',allowOverlap:true})
+  const deliveriesBefore = (await query('SELECT id FROM webhook_deliveries')).length
+  await assert.rejects(reviewChange(admin,swapRequest.id,'approved',''), {statusCode:409})
+  assert.equal((await query('SELECT version FROM shifts WHERE id=?',[originalKong.id]))[0].version, originalKong.version)
+  assert.equal((await query('SELECT version FROM shifts WHERE id=?',[originalYong.id]))[0].version, originalYong.version)
+  assert.equal((await query('SELECT id FROM webhook_deliveries')).length, deliveriesBefore)
+  assert.equal((await listChanges(kong)).find(item=>item.id===swapRequest.id).status,'pending')
+  await cancelShift(admin,obstruction.id,obstruction.version)
+  const beforeAtomic = (await query('SELECT id FROM webhook_deliveries')).length
+  database.exec(`CREATE TEMP TRIGGER fail_swap_second BEFORE UPDATE ON shifts WHEN OLD.id = '${originalYong.id}' BEGIN SELECT RAISE(ABORT, 'Fixture second update failure'); END`)
+  await assert.rejects(reviewChange(admin,swapRequest.id,'approved','Agreed'), /Fixture second update failure/)
+  assert.equal((await query('SELECT version FROM shifts WHERE id=?',[originalKong.id]))[0].version,originalKong.version)
+  assert.equal((await query('SELECT id FROM webhook_deliveries')).length,beforeAtomic)
+  assert.equal((await readGroup(kongGroup.id)).version,kongGroup.version)
+  database.exec('DROP TRIGGER fail_swap_second')
+  await reviewChange(admin,swapRequest.id,'approved','Agreed')
+  const afterKong = await readGroup(kongGroup.id), afterYong = await readGroup(yongGroup.id)
+  assert.equal(afterKong.occurrences[0].start, originalYong.start)
+  assert.equal(afterYong.occurrences[0].start, originalKong.start)
+  assert.equal(afterKong.occurrences[0].engineerId,kong.id)
+  assert.equal(afterYong.occurrences[0].engineerId,yong.id)
+  assert.equal(afterKong.occurrences[0].isException,true)
+  assert.equal(afterYong.occurrences[0].isException,true)
+  assert.equal(afterKong.version,kongGroup.version+1)
+  assert.equal(afterYong.version,yongGroup.version+1)
+  assert.equal(afterYong.occurrences[0].end,originalKong.end)
+  const reverseInput = {...swapInput, version:afterKong.occurrences[0].version, start:afterYong.occurrences[0].start, end:afterYong.occurrences[0].end,swapVersion:afterYong.occurrences[0].version}
+  const staleSwap = await requestChange(kong,reverseInput)
+  await saveShift(admin,{engineerId:yong.id,start:afterYong.occurrences[0].start,end:afterYong.occurrences[0].end,note:'Changed after request',version:afterYong.occurrences[0].version},originalYong.id)
+  await assert.rejects(reviewChange(admin,staleSwap.id,'approved','',true),{statusCode:409})
+  assert.equal((await query('SELECT version FROM shifts WHERE id=?',[originalKong.id]))[0].version,afterKong.occurrences[0].version)
+  await reviewChange(kong,staleSwap.id,'withdrawn','')
+  const latestYong=(await readGroup(yongGroup.id)).occurrences[0]
+  const rejectedSwap=await requestChange(kong,{...reverseInput,swapVersion:latestYong.version})
+  await reviewChange(admin,rejectedSwap.id,'rejected','Declined')
+  assert.equal((await query('SELECT version FROM shifts WHERE id=?',[originalKong.id]))[0].version,afterKong.occurrences[0].version)
+  // Revert approved swaps, including later cancellation, with explicit preview versions.
+  await assert.rejects(previewRevert(kong,swapRequest.id),{statusCode:403})
+  assert.throws(()=>revertChange(kong,swapRequest.id,{}),{statusCode:403})
+  await cancelShift(admin,originalKong.id,afterKong.occurrences[0].version)
+  const restorePreview=await previewRevert(admin,swapRequest.id)
+  assert.equal(restorePreview.shifts.length,2)
+  assert.equal(restorePreview.shifts[0].current.cancelled,true)
+  assert.equal(restorePreview.shifts[0].laterChanged,true)
+  const restoreFields={versions:restorePreview.shifts.map(entry=>({id:entry.current.id,version:entry.current.version})),confirmLaterChanges:true,allowOverlap:false,note:'Restore original nights'}
+  await assert.rejects(revertChange(admin,swapRequest.id,{...restoreFields,confirmLaterChanges:false}),{statusCode:409})
+  await assert.rejects(revertChange(admin,swapRequest.id,{...restoreFields,versions:restoreFields.versions.map(v=>({...v,version:v.version+1}))}),{statusCode:409})
+  const restoreOverlap=await saveShift(admin,{engineerId:kong.id,start:originalKong.start,end:originalKong.end,note:'Other coverage',allowOverlap:true})
+  await assert.rejects(revertChange(admin,swapRequest.id,restoreFields),{statusCode:409})
+  assert.equal((await query('SELECT cancelled FROM shifts WHERE id=?',[originalKong.id]))[0].cancelled,1)
+  const restoreDeliveries=(await query('SELECT id FROM webhook_deliveries')).length
+  database.exec(`CREATE TEMP TRIGGER fail_restore_second BEFORE UPDATE ON shifts WHEN OLD.id = '${originalYong.id}' BEGIN SELECT RAISE(ABORT, 'Fixture restore failure'); END`)
+  await assert.rejects(revertChange(admin,swapRequest.id,{...restoreFields,allowOverlap:true}),/Fixture restore failure/)
+  assert.equal((await query('SELECT cancelled FROM shifts WHERE id=?',[originalKong.id]))[0].cancelled,1)
+  assert.equal((await query('SELECT id FROM webhook_deliveries')).length,restoreDeliveries)
+  database.exec('DROP TRIGGER fail_restore_second')
+  await revertChange(admin,swapRequest.id,{...restoreFields,allowOverlap:true})
+  const restoredKong=(await readGroup(kongGroup.id)).occurrences[0]
+  const restoredYong=(await readGroup(yongGroup.id)).occurrences[0]
+  assert.equal(restoredKong.start,originalKong.start)
+  assert.equal(restoredKong.end,originalKong.end)
+  assert.equal(restoredKong.cancelled,false)
+  assert.equal(restoredKong.isException,false)
+  assert.equal(restoredYong.start,originalYong.start)
+  assert.equal(restoredYong.isException,true) // Preserve a later note differing from the group rule.
+  assert.equal((await listChanges(kong)).find(item=>item.id===swapRequest.id).status,'reverted')
+  assert.equal((await query("SELECT id FROM audit_log WHERE entity_id=? AND action='change.reverted'",[swapRequest.id])).length,1)
+  await assert.rejects(revertChange(admin,swapRequest.id,restoreFields),{statusCode:409})
+  await cancelShift(admin,restoreOverlap.id,restoreOverlap.version)
+  // Ordinary legacy approvals need no approval snapshot; original + current suffice.
+  const legacyOriginal=await saveShift(admin,assignment(kong,10000,10008))
+  const legacyRequest=await requestChange(kong,{...assignment(kong,10020,10028),shiftId:legacyOriginal.id,version:legacyOriginal.version,reason:'Move then restore'})
+  await reviewChange(admin,legacyRequest.id,'approved','')
+  let ordinaryPreview=await previewRevert(admin,legacyRequest.id)
+  assert.equal(ordinaryPreview.shifts[0].laterChanged,false)
+  const superseding=await requestChange(kong,{...assignment(kong,10040,10048),shiftId:legacyOriginal.id,version:ordinaryPreview.shifts[0].current.version,reason:'Pending follow-up'})
+  await assert.rejects(previewRevert(admin,legacyRequest.id),{statusCode:409})
+  await reviewChange(kong,superseding.id,'withdrawn','')
+  await cancelShift(admin,legacyOriginal.id,ordinaryPreview.shifts[0].current.version)
+  await assert.rejects(revertChange(admin,legacyRequest.id,{versions:ordinaryPreview.shifts.map(e=>({id:e.current.id,version:e.current.version})),confirmLaterChanges:true}),{statusCode:409})
+  ordinaryPreview=await previewRevert(admin,legacyRequest.id)
+  await revertChange(admin,legacyRequest.id,{versions:ordinaryPreview.shifts.map(e=>({id:e.current.id,version:e.current.version})),confirmLaterChanges:true,note:'Restore cancelled changed duty'})
+  const [legacyRestored]=await query('SELECT * FROM shifts WHERE id=?',[legacyOriginal.id])
+  assert.equal(legacyRestored.starts_at,Date.parse(legacyOriginal.start))
+  assert.equal(legacyRestored.ends_at,Date.parse(legacyOriginal.end))
+  assert.equal(legacyRestored.cancelled,0)
+  database.close()
+})
