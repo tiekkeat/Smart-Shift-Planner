@@ -113,3 +113,11 @@ Verify the exact raw request bytes before parsing JSON:
 4. Deduplicate `X-Timetable-Event` IDs and return a 2xx response after safely accepting the event.
 
 Failed deliveries retry up to six total attempts. Check **Delivery history** for outcomes. Preserve the deployment's original `APP_SECRET` with its database, since stored webhook signing secrets are encrypted with it.
+
+## Internal engineer batch requests
+
+The browser's session-authenticated API supports `POST /api/app/changes/batch` for engineers. This is separate from the read-only Bearer-token integration API. The normal exact-origin check and session cookie are required.
+
+Send `{ "proposals": [...] }` containing 1–63 proposal objects. Each uses `shiftId`, `version`, `engineerId`, UTC/offset `start` and `end`, a non-empty `reason` (up to 500 characters), and optional `allowOverlap`. A swap additionally supplies `swapShiftId` and `swapVersion`, with the target's exact dates and the requester's engineer ID. The browser repeats the shared reason on each proposal.
+
+Success returns HTTP 201 with `{ "requests": [{ "id": "…", "shiftId": "…" }] }` in input order. Each ID is reviewed independently through the existing change-request review endpoints. A failed batch creates no requests, notifications, or audit entries; actionable per-duty errors include `{ "error": "…", "shiftId": "…" }`. Duplicate source duties or reused swap targets are rejected. Original and swap versions, ownership, active engineers, pending requests, dates, and overlaps are checked inside one roster transaction. Approval still revalidates the current roster. The existing single-proposal `POST /api/app/changes` remains supported.

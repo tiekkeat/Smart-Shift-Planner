@@ -133,40 +133,70 @@ export async function report(user, from, to) {
   return dutyTotals(await listShifts(from, to, user.role === 'engineer' ? user.id : null), from, to)
 }
 
+async function createChangeRequest(run, user, input) {
+  const current = await findShift(run, input.shiftId)
+  if (current.engineer_id !== user.id) throw httpError(403, 'You can request changes to your own shifts.')
+  checkVersion(current, input.version)
+  if (current.ends_at <= Date.now()) throw httpError(400, 'This duty shift has already ended.')
+  const target = input.swapShiftId ? await findShift(run, input.swapShiftId) : null
+  if (target) {
+    checkVersion(target, input.swapVersion)
+    if (target.ends_at <= Date.now()) throw httpError(400, 'The swap duty has already ended.')
+    if (target.id === current.id || target.engineer_id === current.engineer_id) throw httpError(400, 'Choose a shift assigned to another engineer.')
+    if (input.engineerId !== current.engineer_id || Date.parse(input.start) !== target.starts_at || Date.parse(input.end) !== target.ends_at) throw httpError(400, 'Review the selected swap shift and its exact dates.')
+    await validateAssignment(run, { engineerId: target.engineer_id, start: iso(current.starts_at), end: iso(current.ends_at), allowOverlap: input.allowOverlap }, target.id, current.id)
+  }
+  for (const shiftId of [current.id, ...(target ? [target.id] : [])]) {
+    const [pending] = await run("SELECT id FROM change_requests WHERE (shift_id = ? OR swap_shift_id = ?) AND status = 'pending'", [shiftId, shiftId])
+    if (pending) throw httpError(409, 'An open request already exists for one of these assignments.')
+  }
+  const { startsAt, endsAt } = await validateAssignment(run, input, current.id, target?.id)
+  if (endsAt <= Date.now()) throw httpError(400, 'The requested shift has already ended.')
+  if (startsAt === current.starts_at && endsAt === current.ends_at && input.engineerId === current.engineer_id) {
+    throw httpError(400, 'Change the time or select a different engineer.')
+  }
+  const id = randomUUID()
+  await run(`INSERT INTO change_requests
+    (id, shift_id, requester_id, engineer_id, starts_at, ends_at, original_shift, reason, created_at, swap_shift_id, swap_shift)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    id, current.id, user.id, input.engineerId, startsAt, endsAt,
+    JSON.stringify(shiftView(current)), input.reason, Date.now(), target?.id || null, target ? JSON.stringify({ id: target.id, version: target.version, engineerId: target.engineer_id, engineerName: target.engineer_name, start: iso(target.starts_at), end: iso(target.ends_at) }) : null,
+  ])
+  const admins = await run("SELECT id FROM users WHERE role = 'admin' AND active = 1")
+  await notify(run, admins.map((admin) => admin.id), 'Duty change requested', user.name + ' requested a schedule change.')
+  await audit(run, user.id, 'change.requested', id, { shiftId: current.id })
+  return { id }
+}
+
 export function requestChange(user, input) {
   if (user.role !== 'engineer') throw httpError(403, 'Only engineers can request duty changes.')
-  return rosterWrite(async (run) => {
-    const current = await findShift(run, input.shiftId)
-    if (current.engineer_id !== user.id) throw httpError(403, 'You can request changes to your own shifts.')
-    checkVersion(current, input.version)
-    if (current.ends_at <= Date.now()) throw httpError(400, 'This duty shift has already ended.')
-    const target = input.swapShiftId ? await findShift(run, input.swapShiftId) : null
-    if (target) {
-      checkVersion(target, input.swapVersion)
-      if (target.id === current.id || target.engineer_id === current.engineer_id) throw httpError(400, 'Choose a shift assigned to another engineer.')
-      if (input.engineerId !== current.engineer_id || Date.parse(input.start) !== target.starts_at || Date.parse(input.end) !== target.ends_at) throw httpError(400, 'Review the selected swap shift and its exact dates.')
-      await validateAssignment(run, { engineerId: target.engineer_id, start: iso(current.starts_at), end: iso(current.ends_at), allowOverlap: input.allowOverlap }, target.id, current.id)
+  return rosterWrite(run => createChangeRequest(run, user, input))
+}
+
+export function requestChanges(user, inputs) {
+  if (user.role !== 'engineer') throw httpError(403, 'Only engineers can request duty changes.')
+  if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 63) throw httpError(400, 'Select between 1 and 63 duties.')
+  return rosterWrite(async run => {
+    const used = new Set()
+    const requests = []
+    for (const input of inputs) {
+      try {
+        for (const shiftId of [input.shiftId, input.swapShiftId].filter(Boolean)) {
+          if (used.has(shiftId)) throw httpError(400, 'Each duty can only be used once in this submission.')
+          used.add(shiftId)
+        }
+        // Proposals remain independent: never exclude another selected source
+        // from roster validation as though it had already moved or been approved.
+        const collision = inputs.slice(0, requests.length).find(previous =>
+          Date.parse(previous.start) < Date.parse(input.end) && Date.parse(previous.end) > Date.parse(input.start))
+        if (collision && !input.allowOverlap) throw httpError(409, 'This time overlaps existing duty in another selected request.')
+        requests.push({ ...await createChangeRequest(run, user, input), shiftId: input.shiftId })
+      } catch (error) {
+        if (error.statusCode >= 400 && error.statusCode < 500) error.shiftId = input.shiftId
+        throw error
+      }
     }
-    for (const shiftId of [current.id, ...(target ? [target.id] : [])]) {
-      const [pending] = await run("SELECT id FROM change_requests WHERE (shift_id = ? OR swap_shift_id = ?) AND status = 'pending'", [shiftId, shiftId])
-      if (pending) throw httpError(409, 'An open request already exists for one of these assignments.')
-    }
-    const { startsAt, endsAt } = await validateAssignment(run, input, current.id, target?.id)
-    if (endsAt <= Date.now()) throw httpError(400, 'The requested shift has already ended.')
-    if (startsAt === current.starts_at && endsAt === current.ends_at && input.engineerId === current.engineer_id) {
-      throw httpError(400, 'Change the time or select a different engineer.')
-    }
-    const id = randomUUID()
-    await run(`INSERT INTO change_requests
-      (id, shift_id, requester_id, engineer_id, starts_at, ends_at, original_shift, reason, created_at, swap_shift_id, swap_shift)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
-      id, current.id, user.id, input.engineerId, startsAt, endsAt,
-      JSON.stringify(shiftView(current)), input.reason, Date.now(), target?.id || null, target ? JSON.stringify({ id: target.id, version: target.version, engineerId: target.engineer_id, engineerName: target.engineer_name, start: iso(target.starts_at), end: iso(target.ends_at) }) : null,
-    ])
-    const admins = await run("SELECT id FROM users WHERE role = 'admin' AND active = 1")
-    await notify(run, admins.map((admin) => admin.id), 'Duty change requested', user.name + ' requested a schedule change.')
-    await audit(run, user.id, 'change.requested', id, { shiftId: current.id })
-    return { id }
+    return { requests }
   })
 }
 

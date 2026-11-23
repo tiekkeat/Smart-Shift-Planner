@@ -1,9 +1,10 @@
 import { DateTime } from 'luxon'
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, shiftId) {
     super(message)
     this.status = status
+    this.shiftId = shiftId
   }
 }
 
@@ -18,7 +19,7 @@ export async function api(path, { method = 'GET', body, signal } = {}) {
     if (response.status === 401 && path !== '/login' && path !== '/me') {
       window.dispatchEvent(new Event('session-ended'))
     }
-    throw new ApiError(payload?.error || 'The server could not complete this request.', response.status)
+    throw new ApiError(payload?.error || 'The server could not complete this request.', response.status, payload?.shiftId)
   }
   return payload
 }

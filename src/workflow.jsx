@@ -104,7 +104,7 @@ export function ChangesPage({ session, people, onChange, notifyUser }) {
         </tr>)}</tbody></table></div>
         : <Empty icon={ClipboardList} title="No change requests" description={session.user.role === 'engineer' ? 'Choose Request change to find your assigned duty.' : 'Matching requests will appear here.'} />)}
     </section>
-    {requesting && <NewChangeRequest session={session} people={people} onClose={() => setRequesting(false)} onSaved={() => { setRequesting(false); resource.refresh(); onChange(); notifyUser('Change request submitted.') }} />}
+    {requesting && <NewChangeRequest session={session} people={people} onClose={() => setRequesting(false)} onSaved={result => { setRequesting(false); resource.refresh(); onChange(); const count = result.requests.length; notifyUser(count === 1 ? 'Change request submitted.' : count + ' change requests submitted.') }} />}
     {selected && <ReviewDialog item={selected} timezone={session.timezone} role={session.user.role} onClose={() => setSelected(null)}
       onSaved={() => { setSelected(null); resource.refresh(); onChange(); notifyUser('Request updated.') }} />}
   </>

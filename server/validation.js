@@ -13,6 +13,7 @@ export const assignment = z.object({ engineerId: id, start: timestamp, end: time
 export const proposal = assignment.omit({ note: true }).extend({
   shiftId: id, version, swapShiftId: id.optional(), swapVersion: version.optional(), reason: z.string().trim().min(1).max(500),
 })
+export const batchProposal = z.object({ proposals: z.array(proposal).min(1).max(63) })
 export const roles = ['admin', 'manager', 'engineer', 'viewer']
 export const person = z.object({
   name: z.string().trim().min(1).max(120), email, color, teamIds:z.array(id).optional(),

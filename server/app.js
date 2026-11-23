@@ -12,9 +12,9 @@ import { query } from './db.js'
 import { hash, passwordMatches, secret } from './security.js'
 import { httpError, interval, iso, rosterTimeZone, shiftView } from './domain.js'
 import { publicUser, listPeople, savePerson, deletePerson } from './accounts.js'
-import { cancelShift, listChanges, listShifts, report, requestChange, reviewChange, previewRevert, revertChange, saveShift, reorderShift } from './roster.js'
+import { cancelShift, listChanges, listShifts, report, requestChange, requestChanges, reviewChange, previewRevert, revertChange, saveShift, reorderShift } from './roster.js'
 import { registerIntegrations } from './integrations.js'
-import { assignment, email, id, note, parse, person, proposal, range, version } from './validation.js'
+import { assignment, batchProposal, email, id, note, parse, person, proposal, range, version } from './validation.js'
 
 const SESSION_COOKIE = 'timetable_session'
 const SESSION_SECONDS = 12 * 60 * 60
@@ -40,7 +40,9 @@ export async function buildApp({ logger = true } = {}) {
     const status = error.statusCode >= 400 && error.statusCode < 500 ? error.statusCode : 500
     if (status === 500) request.log.error({ code: error.code, name: error.name }, 'Request failed')
     if (status === 401 && request.url.startsWith('/api/v1/')) reply.header('WWW-Authenticate', 'Bearer')
-    return reply.code(status).send({ error: status === 500 ? 'An unexpected error occurred.' : error.message })
+    return reply.code(status).send({ error: status === 500 ? 'An unexpected error occurred.' : error.message,
+      ...(status !== 500 && error.shiftId && { shiftId: error.shiftId }),
+    })
   })
 
   const authenticated = (roles, action) => async (request, reply) => {
@@ -132,6 +134,8 @@ export async function buildApp({ logger = true } = {}) {
   app.get('/api/app/changes', authenticated(['admin','manager','engineer'], listChanges))
   app.post('/api/app/changes', authenticated(['engineer'], async (user, request, reply) =>
     reply.code(201).send(await requestChange(user, parse(proposal, request.body)))))
+  app.post('/api/app/changes/batch', { bodyLimit: 256 * 1024 }, authenticated(['engineer'], async (user, request, reply) =>
+    reply.code(201).send(await requestChanges(user, parse(batchProposal, request.body).proposals))))
   app.post('/api/app/changes/:id/review', admin(async (user, request, reply) => {
     const fields = parse(z.object({ decision: z.enum(['approved', 'rejected']), note, allowOverlap: z.boolean().default(false) }), request.body)
     await reviewChange(user, parse(id, request.params.id), fields.decision, fields.note, fields.allowOverlap)
