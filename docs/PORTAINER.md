@@ -1,70 +1,144 @@
-# Deploy the locally built images with Portainer
+# Recover on another host with Portainer
 
-Use [compose.portainer.yaml](../compose.portainer.yaml) with a **Docker Standalone** environment on the same host where the images were built. It has no source checkout or build requirement in Portainer. The API, worker, and migration share one image; nginx and the frontend use the web image.
+Use **Portainer → Docker Standalone → Stacks** for this Compose file. It is not a Docker Swarm stack: it relies on Compose startup conditions and bind mounts on one Docker host.
 
-## Build on the Docker host
+For an update on the existing Docker host using locally built images and a named database volume, use the [same-host deployment guide](PORTAINER-LOCAL.md). Keep your existing persistence layout when updating an installed stack.
 
-From the repository root:
+## What is persistent
+
+All app data is in MySQL: accounts/password hashes, duties and repeated groups, requests/approvals/reverts, team memberships, branding/logo/favicon, templates, holidays, tokens, webhook configuration, notifications, and audit history. There is no separate application upload volume.
+
+The original installation uses the named volume `smart-timetable_database`, mounted inside MySQL at `/var/lib/mysql`. Its Docker-managed source directory is `/var/lib/docker/volumes/smart-timetable_database/_data`. Do not copy that directory while MySQL is running. The recovery package uses a consistent transactional SQL dump that can initialize a new MySQL 8.4 database.
+
+The package also preserves the matching application secret and credentials. **Do not regenerate `APP_SECRET` when restoring**: existing webhook secrets need the original key.
+
+## New host paths
+
+| New host path | Container destination | Purpose |
+| --- | --- | --- |
+| `/srv/smart-shift-planner/mysql` | `/var/lib/mysql` on `db` | Live persistent database files; read/write. |
+| `/srv/smart-shift-planner/restore` | `/docker-entrypoint-initdb.d` on `db` | SQL restore source; read-only. |
+| `/srv/smart-shift-planner/.env` | Import into Portainer's stack environment variables | Protected configuration, including matching secrets. |
+
+The paths belong to the Docker endpoint host, not the Portainer UI server. In a remote Agent environment, create these paths and load the images on the Agent's Docker host.
+
+## Recovery package
+
+The private archive contains:
+
+- `roster.sql.gz`: consistent application database dump.
+- `environment.env`: matching `.env`, plus image tags, bind paths, and paused-worker setting. Contains real deployment secrets; never commit it or paste it into chat.
+- `images.tar.gz`: exact deployed API, web, and MySQL images, with snapshot-specific tags. The exported images are **linux/amd64**; an ARM host requires rebuilding compatible images from source.
+- `compose.portainer.yaml`: image-only stack, without local build contexts.
+- `prepare-portainer-host.sh`: checks checksums, refuses an initialized target, prepares paths, and loads images. It does not start services.
+- `backup-metadata.json`, `restore-test.json`, and `SHA256SUMS`: snapshot metadata, isolated restoration results, and integrity checks.
+- `PORTAINER.md`: this recovery guide.
+
+Transfer the archive privately, for example with `scp`, to the new host. Keep the archive and its extracted directory readable only by the operator/root. A SQL dump is a point-in-time snapshot: later changes on the source host are not included.
+
+## 1. Prepare the new host
+
+Docker and Portainer must already be installed. Extract the archive into a private working directory; replace the archive/directory names with your actual snapshot names:
 
 ```bash
-docker build --target api --tag smart-timetable-api:736d810 .
-docker build --target web --tag smart-timetable-web:736d810 .
-docker build -f Dockerfile.mysql --tag smart-timetable-mysql:8.4.13-bookworm .
+umask 077
+mkdir -p ~/smart-shift-recovery
+cd ~/smart-shift-recovery
+tar -xzf /path/to/smart-shift-planner-portainer-YYYYMMDDTHHMMSSZ.tar.gz
+cd portainer-YYYYMMDDTHHMMSSZ
+sha256sum -c SHA256SUMS
+sudo sh ./prepare-portainer-host.sh
 ```
 
-`736d810` identifies the application source revision used for this initial build. For future application builds, choose a new tag for both application images and set the stack's `IMAGE_TAG` to that tag. Keep the previous images for rollback after reviewing database compatibility. Local images must remain on this Docker host; no registry push is needed.
+The script refuses to overwrite a non-empty `/srv/smart-shift-planner/mysql` or existing `/srv/smart-shift-planner/.env`. To restore an existing host, stop its stack and preserve its data/configuration separately before deliberately preparing a fresh target. Do not empty a database directory while its container is running.
 
-The database image installs Oracle's signed MySQL 8.4.13 Debian packages on Bookworm and copies the official image's initialization entrypoint. This avoids the Oracle Linux 9 userspace requirement for x86-64-v2 CPU features, which some QEMU VMs do not expose. It preserves the MySQL engine and the existing `MYSQL_*` variables and data directory. Build this image too; the registry's `mysql:8.4` image is not a substitute on these hosts. Package versions and the repository signing-key checksum are pinned in `Dockerfile.mysql`; review and rebuild them when applying MySQL security updates.
+The parent `/srv/smart-shift-planner` is root-only (`0700`). The restore file is readable by MySQL inside its bind mount; do not make the whole parent directory world-readable or use `chmod 777`.
 
-## Create the stack
+## 2. Set the new browser origin
 
-1. In Portainer, select this host's Docker environment, then **Stacks → Add stack**.
-2. Name the stack `smart-timetable`. Choose **Web editor** and paste the complete contents of `compose.portainer.yaml`.
-3. Under **Environment variables**, add the settings below (or paste them in advanced mode). Replace every `REPLACE_...` value before deployment. These values belong in Portainer, outside Git.
+Edit the protected environment file locally:
+
+```bash
+sudoedit /srv/smart-shift-planner/.env
+```
+
+Keep `DB_ROOT_PASSWORD`, `DB_PASSWORD`, and `APP_SECRET` unchanged. Set these non-secret entries for the destination host:
 
 ```dotenv
-IMAGE_TAG=736d810
-DB_ROOT_PASSWORD=REPLACE_WITH_UNIQUE_ROOT_PASSWORD
-DB_PASSWORD=REPLACE_WITH_UNIQUE_APPLICATION_DB_PASSWORD
-ADMIN_EMAIL=REPLACE_WITH_YOUR_ADMIN_EMAIL
-ADMIN_NAME=Roster Admin
-ADMIN_PASSWORD=REPLACE_WITH_12_TO_128_CHARACTER_PASSWORD
-APP_SECRET=REPLACE_WITH_64_HEXADECIMAL_CHARACTERS
-APP_ORIGIN=http://172.60.20.220:8081
-COOKIE_SECURE=false
+APP_ORIGIN=http://NEW_HOST_IP:8081
 BIND_ADDRESS=0.0.0.0
 WEB_PORT=8081
-ROSTER_TIMEZONE=Asia/Kuala_Lumpur
-DATABASE_VOLUME=smart-timetable_database
-WEBHOOK_ALLOWED_ORIGINS=
+COOKIE_SECURE=false
+MYSQL_DATA_DIR=/srv/smart-shift-planner/mysql
+RESTORE_DIR=/srv/smart-shift-planner/restore
+ENABLE_WORKER=false
 ```
 
-The host's LAN address was checked as `172.60.20.220`, and port `8081` was free when preparing this stack. Use the actual address clients will browse to. `APP_ORIGIN` must match its scheme, hostname/IP, and port exactly, without a trailing slash. For HTTPS through a reverse proxy, use the HTTPS origin and `COOKIE_SECURE=true`; see [reverse-proxy setup](DEPLOYMENT.md#https-behind-a-reverse-proxy).
+Replace `NEW_HOST_IP` with the reachable IP or DNS name. For HTTPS, use the exact `https://...` browser origin and `COOKIE_SECURE=true`. Allow the selected web port through the destination's firewall. A wrong origin causes “The request origin is not allowed.”
 
-Generate the application secret privately with `openssl rand -hex 32`. Generate distinct database passwords, for example with `openssl rand -hex 24` for each. Store these values securely alongside backups. Do not paste secret output into chat or commit it.
+Preserve the `API_IMAGE`, `WEB_IMAGE`, and `MYSQL_IMAGE` values from the package. These identify the images imported by `docker load`; they do not require a registry login. The Compose file uses `pull_policy: never` to prevent replacing them with unrelated registry images. Disable any Portainer option that forces images to be re-pulled.
 
-4. Leave **Re-pull image** / **Pull latest image** disabled if offered. All three images are local and their Compose entries use `pull_policy: never`.
-5. Click **Deploy the stack**. MySQL becomes healthy, migration runs to completion, then the API/worker start; web waits for the API to become healthy.
+## 3. Deploy in Portainer
 
-Portainer supports interpolating the variables entered in the stack form into `${VARIABLE}` expressions. No `env_file` or host `.env` is required by this file. See [Portainer's stack creation documentation](https://docs.portainer.io/user/docker/stacks/add).
+1. Select the new **Docker Standalone** endpoint.
+2. Open **Stacks → Add stack** and name it `smart-shift-planner`.
+3. Upload or paste the package's `compose.portainer.yaml`.
+4. In **Environment variables**, use Portainer's `.env` import to load the edited `/srv/smart-shift-planner/.env`. Obtain the file through your existing secure administration channel. Do not put actual secret values into the Compose editor or Git. The Compose file explicitly forwards required variables to each service.
+5. Leave `ENABLE_WORKER=false` for initial verification and deploy the stack.
 
-## Verify after deployment
-
-In Portainer, expect `db` and `api` healthy, `worker` and `web` running, and `migrate` exited with code **0**. A stopped migration container is expected. Check the migration logs first if application startup fails.
+For a CLI deployment using the same prepared files:
 
 ```bash
-docker ps -a --filter label=com.docker.compose.project=smart-timetable
-curl --fail http://172.60.20.220:8081/api/health
+sudo docker compose \
+  --env-file /srv/smart-shift-planner/.env \
+  -f /srv/smart-shift-planner/compose.portainer.yaml \
+  up -d
 ```
 
-Health should return `{"status":"ok"}`. Browse to `http://172.60.20.220:8081` and sign in with the configured initial admin credentials.
+On the first start with an empty `mysql` directory, the MySQL image initializes the database/user, imports `restore/10-roster.sql.gz`, and then becomes healthy over TCP. `migrate` runs against the restored data before API/worker startup. The API and web then start. Imports can take longer on larger databases; the recovery health check allows extra initialization time.
 
-## Data and future updates
+Expected state: database/API healthy, migration exited with code 0, and web running. The worker container runs idle while `ENABLE_WORKER=false`; its logs explain that background work is paused. It does not send webhooks or refresh holiday feeds until enabled.
 
-The explicit volume name is `smart-timetable_database`, independent of Portainer's project naming. Keep this volume and the same `APP_SECRET` on redeployment. MySQL data, accounts, branding, and duties persist there. Bootstrap admin settings only create an admin if no active admin exists.
+## 4. Verify and cut over
 
-For an existing installation, first back up its database and matching secrets, set `DATABASE_VOLUME` to the existing volume, and retain its actual database credentials and `APP_SECRET`. Changing a MySQL password environment variable does not change a password already stored in MySQL. This Compose file uses database/user `timetable`, matching the repository's standard deployment.
+Browse to the new `APP_ORIGIN`. Use existing account passwords: bootstrap environment values do not reset accounts in the restored database.
 
-For updates, build both images under a new tag on this host, change `IMAGE_TAG` in Portainer, and update the stack without forcing registry pulls. Ensure `migrate` runs successfully for the new image before accepting traffic. Follow the [backup and upgrade procedures](DEPLOYMENT.md) and retain the volume when removing/recreating a stack.
+Check the calendar, changed/reverted nights, directory, app branding, settings, request history, and API health. Do not create real assignments, refresh real feeds, or test real webhooks until the destination is ready to become the active installation.
 
-If an earlier stack failed with `Fatal glibc error: CPU does not support x86-64-v2`, build the database image above, replace the stack YAML with the current `compose.portainer.yaml`, and redeploy with the same settings and volume. The `db` service must use `smart-timetable-mysql:8.4.13-bookworm`. Do not delete the volume or change database passwords to address this CPU error.
+For migration of the active service:
+
+1. Arrange a final cutover window. Stop accepting changes on the old host, stop its API and worker, and take a fresh final dump if changes occurred after this backup. This prepared package is a snapshot, not continuous replication.
+2. Restore/verify that final snapshot on the target. Redirect the browser URL/DNS/proxy to it and keep `APP_ORIGIN` exact.
+3. Stop the old worker before setting `ENABLE_WORKER=true` on the new stack. Redeploy to apply the new worker setting.
+4. Retain the source and backup as a rollback reference until the new host is verified.
+
+Do not operate two independently writable copies as if they were a synchronized roster. The databases diverge, and queued webhook deliveries copied from a backup may be delivered again; receivers should deduplicate event IDs.
+
+## 5. After restoration
+
+MySQL processes `/docker-entrypoint-initdb.d` **only when its data directory is first initialized**. Restarting the restored stack does not reimport the dump. Replacing `10-roster.sql.gz` does not overwrite an already initialized database.
+
+After successful recovery and retaining an off-host backup, remove the staged dump if desired and keep the empty restore directory in place, since the Compose file still mounts it:
+
+```bash
+sudo rm /srv/smart-shift-planner/restore/10-roster.sql.gz
+```
+
+Future backups must cover the new MySQL database and matching protected environment. Do not delete or replace `/srv/smart-shift-planner/mysql` during image updates. Application services need no bind mounts for their source, `node_modules`, or `dist`.
+
+## Updating application images after recovery
+
+Build the new API and web images on the destination Docker host. In the existing Portainer stack, update `API_IMAGE` and `WEB_IMAGE` to their complete image names. For the guided duty-request build:
+
+```dotenv
+API_IMAGE=smart-timetable-api:duty-requests-20261123
+WEB_IMAGE=smart-timetable-web:duty-requests-20261123
+```
+
+Update the stack with image re-pulling disabled. Retain the existing `MYSQL_IMAGE`, bind paths, credentials, `APP_SECRET`, and chosen `ENABLE_WORKER` setting. This recovery Compose file uses full image names rather than `IMAGE_TAG`. Do not switch a running deployment between bind mounts and named volumes as part of an application update.
+
+## References
+
+- [Portainer: add a stack and import environment variables](https://docs.portainer.io/user/docker/stacks/add).
+- [Official MySQL image initialization and persistent data behavior](https://github.com/docker-library/docs/blob/master/mysql/README.md).
+- [General deployment, backup, and recovery guide](DEPLOYMENT.md).

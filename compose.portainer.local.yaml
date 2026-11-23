@@ -1,0 +1,89 @@
+# Paste into a Portainer Docker Standalone stack named smart-timetable.
+# Images must already exist on the selected Docker host.
+x-database-client: &database-client
+  DB_HOST: db
+  DB_USER: timetable
+  DB_NAME: timetable
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in Portainer}
+
+x-application: &application
+  image: smart-timetable-api:${IMAGE_TAG:-duty-requests-20261123}
+  pull_policy: never
+
+services:
+  db:
+    image: smart-timetable-mysql:8.4.13-bookworm
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in Portainer}
+      MYSQL_DATABASE: timetable
+      MYSQL_USER: timetable
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in Portainer}
+    volumes:
+      - database:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
+      interval: 5s
+      timeout: 4s
+      retries: 18
+
+  migrate:
+    <<: *application
+    command: ["node", "server/migrate.js"]
+    restart: "no"
+    environment:
+      <<: *database-client
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in Portainer}
+      ADMIN_NAME: ${ADMIN_NAME:-Roster Admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in Portainer}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *application
+    restart: unless-stopped
+    environment:
+      <<: *database-client
+      HOST: 0.0.0.0
+      TRUST_PROXY_HOPS: "1"
+      APP_ORIGIN: ${APP_ORIGIN:?Set the exact browser origin in Portainer}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      APP_SECRET: ${APP_SECRET:?Set APP_SECRET in Portainer}
+      ROSTER_TIMEZONE: ${ROSTER_TIMEZONE:-Asia/Kuala_Lumpur}
+      WEBHOOK_ALLOWED_ORIGINS: ${WEBHOOK_ALLOWED_ORIGINS:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  worker:
+    <<: *application
+    command: ["node", "server/worker.js"]
+    restart: unless-stopped
+    environment:
+      <<: *database-client
+      APP_SECRET: ${APP_SECRET:?Set APP_SECRET in Portainer}
+      WEBHOOK_ALLOWED_ORIGINS: ${WEBHOOK_ALLOWED_ORIGINS:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    image: smart-timetable-web:${IMAGE_TAG:-duty-requests-20261123}
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${WEB_PORT:-8081}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  database:
+    name: ${DATABASE_VOLUME:-smart-timetable_database}

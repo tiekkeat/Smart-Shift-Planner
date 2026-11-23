@@ -9,7 +9,7 @@ This guide covers Smart Shift Planner, whose deployed application and Compose pr
 - Outbound access to npm/container registries while building, and subscribed holiday feeds/webhook destinations at runtime.
 - A host port for nginx. Only `web` publishes a port; MySQL and the API stay inside the Compose network.
 
-Compose builds `smart-timetable-mysql:8.4.13-bookworm` from `Dockerfile.mysql`, using Oracle's signed MySQL 8.4 packages on Debian. This supports older CPU feature sets, including QEMU guests without x86-64-v2 support; the upstream `mysql:8.4` Oracle Linux image can fail before starting on these hosts. Keep this database image built and current alongside the application images. For image-only deployment, see the [Portainer guide](PORTAINER.md).
+Compose builds `smart-timetable-mysql:8.4.13-bookworm` from `Dockerfile.mysql`, using Oracle's signed MySQL 8.4 packages on Debian. This supports older CPU feature sets, including QEMU guests without x86-64-v2 support; the upstream `mysql:8.4` Oracle Linux image can fail before starting on these hosts. Keep this database image built and current alongside the application images. For image-only deployment, see the [Portainer guide](PORTAINER-LOCAL.md).
 
 On the existing machine, Docker access can require `sg docker -c 'docker compose …'`. Use that existing group access; do not change Docker socket permissions. Commands below use ordinary `docker compose` for readability.
 

@@ -1,42 +1,52 @@
-# Paste into a Portainer Docker Standalone stack named smart-timetable.
-# Images must already exist on the selected Docker host.
+name: smart-shift-planner
+
 x-database-client: &database-client
   DB_HOST: db
   DB_USER: timetable
   DB_NAME: timetable
-  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in Portainer}
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
 
 x-application: &application
-  image: smart-timetable-api:${IMAGE_TAG:-736d810}
+  image: ${API_IMAGE:?Load the API image from the recovery package}
   pull_policy: never
 
 services:
   db:
-    image: smart-timetable-mysql:8.4.13-bookworm
+    image: ${MYSQL_IMAGE:?Load the MySQL image from the recovery package}
     pull_policy: never
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in Portainer}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env}
       MYSQL_DATABASE: timetable
       MYSQL_USER: timetable
-      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in Portainer}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
     volumes:
-      - database:/var/lib/mysql
+      - type: bind
+        source: ${MYSQL_DATA_DIR:-/srv/smart-shift-planner/mysql}
+        target: /var/lib/mysql
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RESTORE_DIR:-/srv/smart-shift-planner/restore}
+        target: /docker-entrypoint-initdb.d
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 --silent"]
       interval: 5s
       timeout: 4s
-      retries: 18
+      retries: 60
+      start_period: 120s
 
   migrate:
     <<: *application
     command: ["node", "server/migrate.js"]
-    restart: "no"
     environment:
       <<: *database-client
-      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in Portainer}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in .env}
       ADMIN_NAME: ${ADMIN_NAME:-Roster Admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in Portainer}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
     depends_on:
       db:
         condition: service_healthy
@@ -48,9 +58,9 @@ services:
       <<: *database-client
       HOST: 0.0.0.0
       TRUST_PROXY_HOPS: "1"
-      APP_ORIGIN: ${APP_ORIGIN:?Set the exact browser origin in Portainer}
+      APP_ORIGIN: ${APP_ORIGIN:?Set the exact browser origin for the new host}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      APP_SECRET: ${APP_SECRET:?Set APP_SECRET in Portainer}
+      APP_SECRET: ${APP_SECRET:?Set APP_SECRET in .env}
       ROSTER_TIMEZONE: ${ROSTER_TIMEZONE:-Asia/Kuala_Lumpur}
       WEBHOOK_ALLOWED_ORIGINS: ${WEBHOOK_ALLOWED_ORIGINS:-}
     depends_on:
@@ -64,18 +74,27 @@ services:
 
   worker:
     <<: *application
-    command: ["node", "server/worker.js"]
+    command:
+      - sh
+      - -c
+      - |
+        if [ "$$ENABLE_WORKER" = "true" ]; then
+          exec node server/worker.js
+        else
+          exec node -e 'console.log("Background work paused until ENABLE_WORKER=true after cutover."); setInterval(() => {}, 3600000)'
+        fi
     restart: unless-stopped
     environment:
       <<: *database-client
-      APP_SECRET: ${APP_SECRET:?Set APP_SECRET in Portainer}
+      APP_SECRET: ${APP_SECRET:?Set APP_SECRET in .env}
+      ENABLE_WORKER: ${ENABLE_WORKER:-false}
       WEBHOOK_ALLOWED_ORIGINS: ${WEBHOOK_ALLOWED_ORIGINS:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
 
   web:
-    image: smart-timetable-web:${IMAGE_TAG:-736d810}
+    image: ${WEB_IMAGE:?Load the web image from the recovery package}
     pull_policy: never
     restart: unless-stopped
     ports:
@@ -83,7 +102,3 @@ services:
     depends_on:
       api:
         condition: service_healthy
-
-volumes:
-  database:
-    name: ${DATABASE_VOLUME:-smart-timetable_database}
