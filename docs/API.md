@@ -132,3 +132,7 @@ Session-authenticated shift writes accept optional `templateId` (UUID or `null`)
 Admin-only `GET /api/app/report/classification-preview?from=...&to=...` accepts a range of up to 63 days. It returns `{from, to, fingerprint, units}`. Units have a `key`, status (`matched`, `ambiguous`, `unmatched`, or `pending`), matched templates, and all affected duty snapshots. Repeated-group units include every normal occurrence, even outside the selected range; exceptions are separate. A pending request on any group occurrence blocks its classification.
 
 Admin-only `POST /api/app/report/classification` accepts `{from, to, fingerprint, keys}` with 1–1000 distinct matched unit keys from the preview. It recomputes matches and checks the fingerprint under the roster lock, updates selected units atomically, and returns `{classified: <number of duties>}`. Changes to duties, group rules, or active template definitions make the preview stale (409). Classification only updates types and optimistic versions, records audit entries, and emits no scheduling notifications/webhooks. It never changes times, engineers, or cancellation state. All browser mutation routes retain the session and exact-origin checks. The external read-only `/api/v1` response shapes remain unchanged.
+
+## Compensation leave
+
+See [Compensation leave](LEAVE.md#session-api) for the session-authenticated balance, earning-rule, initialization, and leave-application APIs. These do not change the external `/api/v1` integration API.

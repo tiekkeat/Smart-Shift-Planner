@@ -1,3 +1,4 @@
+import { registerLeave } from './leave.js'
 import { registerClassification } from './classification.js'
 import {registerTeams,memberships} from './teams.js'
 import { registerCalendarOrder } from './calendar-order.js'
@@ -133,6 +134,7 @@ export async function buildApp({ logger = true } = {}) {
     return report(user, startsAt, endsAt, templateId)
   }))
 
+  registerLeave(app, authenticated)
   registerClassification(app, admin)
 
   app.get('/api/app/changes', authenticated(['admin','manager','engineer'], listChanges))

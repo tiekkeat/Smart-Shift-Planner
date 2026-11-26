@@ -1,3 +1,4 @@
+import { assertNoLeave, reconcileDuty } from './leave.js'
 import { resolveTemplate } from './templates.js'
 import { expandDutyGroup } from './duty-groups.js'
 import { randomUUID } from 'node:crypto'
@@ -28,6 +29,7 @@ const describeTime = new Intl.DateTimeFormat('en-MY', {
 })
 
 export async function recordShiftChange(run, actor, type, before, after) {
+  await reconcileDuty(run, after, actor)
   const current = shiftView(after)
   const previous = before ? shiftView(before) : null
   const titles = {
@@ -72,6 +74,7 @@ async function validateAssignment(run, input, skipId, swapId) {
   const { startsAt, endsAt } = interval(input.start, input.end)
   const [engineer] = await run("SELECT id, name FROM users WHERE id = ? AND active = 1 AND role = 'engineer'", [input.engineerId])
   if (!engineer) throw httpError(400, 'Choose an active engineer.')
+  await assertNoLeave(run, input.engineerId, startsAt, endsAt)
   const [conflict] = await run(shiftSelect +
     ' WHERE s.cancelled = 0 AND s.starts_at < ? AND s.ends_at > ? AND s.id <> ?' + (input.skipGroupId ? ' AND (s.group_id IS NULL OR s.group_id <> ?)' : '') + (swapId ? ' AND s.id <> ?' : '') + ' LIMIT 1',
   [endsAt, startsAt, skipId || '', ...(input.skipGroupId ? [input.skipGroupId] : []), ...(swapId ? [swapId] : [])])

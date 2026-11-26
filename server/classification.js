@@ -1,3 +1,4 @@
+import { reconcileDuty } from './leave.js'
 import { createHash } from 'node:crypto'
 import { DateTime } from 'luxon'
 import { z } from 'zod'
@@ -78,6 +79,8 @@ export function applyClassification(user, input) {
       for (const duty of unit.duties) {
         const result = await run('UPDATE shifts SET template_id=?, version=version+1 WHERE id=? AND version=? AND template_id IS NULL', [templateId, duty.id, duty.version])
         if (result.affectedRows !== 1) throw httpError(409, 'A duty changed. Refresh the preview before classifying.')
+        const [updated] = await run('SELECT * FROM shifts WHERE id=?', [duty.id])
+        await reconcileDuty(run, updated, user)
         count++
       }
       if (unit.groupId) {

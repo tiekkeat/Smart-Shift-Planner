@@ -16,7 +16,7 @@ The deployed interface may display **Smart Timetable** or an administrator's cus
 - Approval-based change requests, atomic two-engineer swaps, and audited restoration of approved changes.
 - Admin, Manager, Engineer, and Viewer accounts, team memberships, contact details, and engineer colors.
 - Custom branding, logo/favicon, shift time templates, and subscribed public holiday calendars.
-- Duty-hour reports, notifications, read-only scoped API tokens, and signed webhook deliveries.
+- Duty-hour reports, compensation leave balances and applications, notifications, read-only scoped API tokens, and signed webhook deliveries.
 
 ## Run with Docker Compose
 
@@ -74,6 +74,10 @@ In **App settings → Public holiday placement**, choose **Above shifts**, **Bel
 Under **App settings → Public holiday calendars**, subscribe to a region preset (Malaysia, Kuala Lumpur, or Selangor) or paste a public HTTPS iCalendar `.ics` URL. Set a highlight color for the subscription. Holidays appear as highlighted dates and named calendar entries; Week and Day views show a Holidays row. Feeds refresh daily in the worker. Use **Refresh** to update immediately or **Unsubscribe** to remove the feed. Failed refreshes retain the previous calendar and show an error in settings. Dates and regional coverage follow the feed provider.
 
 Under **App settings → Shift time templates**, add, edit, or delete reusable times. For example, **Night duty** starts at `18:30`, ends at `01:00`, and uses **Next day**. **Weekend duty** starts at `09:00`, ends at `09:00`, and also uses **Next day**. Choose a template in the shift editor to fill its start/end times on the selected start date, then review and save. Selecting a template also saves its shift type for reports; manual time edits retain that type unless you choose another type or Unclassified. Changing template times does not change saved duties. Renaming updates report headings; deleting a template hides it from new assignments while preserving its historical type and counts.
+
+## Compensation leave
+
+Admins configure days earned per completed shift template and review historical credits before activating automatic earning. Engineers can apply for full/half-day leave; managers/admins approve requests, with reservations, balance deductions, and roster conflict checks. Managers/admins can add manual credits; admin debit corrections and automatic duty reversals retain history. See [Compensation leave setup and API](docs/LEAVE.md).
 
 ## How scheduling works
 

@@ -1,3 +1,4 @@
+import { CompensationPage, LeaveApplicationsPage } from './leave.jsx'
 import { StrictMode, createContext, useContext, useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ArrowRight, ArrowUpRight, BarChart3, Bell, CalendarDays, ChevronRight, ClipboardList, Clock3, Eye, EyeOff, KeyRound, LoaderCircle, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Settings, UsersRound } from 'lucide-react'
@@ -15,6 +16,8 @@ const pages = [
   { id: 'calendar', title: 'Duty calendar', icon: CalendarDays },
   { id: 'changes', title: 'Change requests', icon: ClipboardList, roles: ['admin','manager','engineer'] },
   { id: 'reports', title: 'Duty hours', icon: BarChart3, roles: ['admin','manager','engineer'] },
+  { id: 'compensation', title: 'Compensation leave', icon: Clock3, roles: ['admin','manager','engineer'] },
+  { id: 'leave', title: 'Leave applications', icon: CalendarDays, roles: ['admin','manager','engineer'] },
   { id: 'notifications', title: 'Notifications', icon: Bell, roles: ['admin','manager','engineer'] },
   { id: 'people', title: 'Team directory', icon: UsersRound, roles: ['admin', 'manager'] },
   { id: 'settings', title: 'App settings', icon: Settings, roles: ['admin'] },
@@ -172,6 +175,8 @@ function Workspace({ session, onSignOut, onBrandingSaved }) {
         {page.id === 'calendar' && <CalendarPage teams={teams} holidayPlacement={branding.holidayPlacement || 'top'} session={session} people={people} onChange={() => refreshFeed()} notifyUser={notifyUser} />}
         {page.id === 'people' && <PeoplePage teams={teams} onTeamsChange={()=>{refreshTeams();refreshPeople()}} session={session} people={people} onChange={() => refreshPeople()} notifyUser={notifyUser} error={peopleError} />}
         {page.id === 'changes' && <ChangesPage people={people} session={session} onChange={() => refreshFeed()} notifyUser={notifyUser} />}
+        {page.id === 'compensation' && <CompensationPage session={session} />}
+        {page.id === 'leave' && <LeaveApplicationsPage session={session} />}
         {page.id === 'reports' && <ReportsPage session={session} />}
         {page.id === 'notifications' && <NotificationsPage notifications={notifications} timezone={timezone} refresh={() => refreshFeed()} error={feedError} />}
         {page.id === 'settings' && <SettingsPage timezone={timezone} branding={branding} onSaved={onBrandingSaved} notifyUser={notifyUser} />}

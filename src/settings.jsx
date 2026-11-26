@@ -1,3 +1,4 @@
+import { LeaveSettings } from './leave.jsx'
 import { ScheduleSettings } from './schedule-settings.jsx'
 import { useState } from 'react'
 import { api } from './lib.js'
@@ -37,6 +38,7 @@ export function SettingsPage({ branding, onSaved, notifyUser, timezone }) {
       <Status error={uploadError || action.error} />
       <div className="dialog-footer"><Button variant="secondary" disabled={action.busy || reading} onClick={() => setDraft({ ...defaultBranding })}>Reset to defaults</Button><Button type="submit" disabled={action.busy || reading}>Save settings</Button></div>
     </form></section>
+    <LeaveSettings timezone={timezone} />
     <ScheduleSettings notifyUser={notifyUser} timezone={timezone} />
   </>
 }

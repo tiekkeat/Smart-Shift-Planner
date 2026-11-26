@@ -1,3 +1,4 @@
+import { accrueLeave } from './leave.js'
 import { refreshDueHolidayFeeds } from './holidays.js'
 import { createHmac, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -56,6 +57,14 @@ async function deliver(job) {
   ])
 }
 
+let leaveSync = null
+let lastLeaveSync = 0
+function syncCompensationLeave() {
+  if (leaveSync || stopping || Date.now() - lastLeaveSync < 60000) return
+  lastLeaveSync = Date.now()
+  leaveSync = accrueLeave().catch(() => console.error('Compensation leave accrual failed.')).finally(() => { leaveSync = null })
+}
+
 let holidaySync = null
 function syncHolidays() {
   if (holidaySync || stopping) return
@@ -67,6 +76,7 @@ holidayTimer.unref()
 
 while (!stopping) {
   try {
+    syncCompensationLeave()
     const job = await claim()
     if (job) await deliver(job)
     else await delay(2000)
@@ -77,4 +87,5 @@ while (!stopping) {
 }
 clearInterval(holidayTimer)
 if (holidaySync) await holidaySync
+if (leaveSync) await leaveSync
 await pool.end()

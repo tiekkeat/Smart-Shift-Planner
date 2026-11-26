@@ -187,3 +187,7 @@ curl --fail http://localhost:8080/api/health
 ```
 
 Use the actual host/port for health requests. Review logs locally and redact sensitive details before sharing. Avoid printing `docker compose config` or container environments in shared logs: expanded configuration can include deployment secrets.
+
+### Compensation leave upgrade
+
+Deploy API, worker, and web together. The repeatable migrator creates the additive leave tables; existing roster data and template classifications are retained. Automatic compensation earning remains disabled until an admin configures rates and confirms the historical preview under App settings. See [Compensation leave](LEAVE.md).

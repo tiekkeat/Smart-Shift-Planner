@@ -177,3 +177,66 @@ CREATE TABLE IF NOT EXISTS user_teams (
  FOREIGN KEY (user_id) REFERENCES users(id),
  FOREIGN KEY (team_id) REFERENCES teams(id)
 );
+
+CREATE TABLE IF NOT EXISTS leave_settings (
+  id INT PRIMARY KEY,
+  starts_on CHAR(10) NOT NULL,
+  activated_at BIGINT NOT NULL,
+  activated_by CHAR(36) NOT NULL
+);
+CREATE TABLE IF NOT EXISTS leave_rules (
+  id CHAR(36) PRIMARY KEY,
+  template_id CHAR(36) NOT NULL,
+  effective_on CHAR(10) NOT NULL,
+  units INT NOT NULL,
+  created_by CHAR(36) NOT NULL,
+  created_at BIGINT NOT NULL,
+  UNIQUE (template_id, effective_on),
+  FOREIGN KEY (template_id) REFERENCES shift_templates(id)
+);
+CREATE TABLE IF NOT EXISTS leave_ledger (
+  id CHAR(36) PRIMARY KEY,
+  engineer_id CHAR(36) NOT NULL,
+  units INT NOT NULL,
+  kind VARCHAR(32) NOT NULL,
+  source_key VARCHAR(160) NOT NULL UNIQUE,
+  reason VARCHAR(500) NOT NULL,
+  actor_id CHAR(36),
+  created_at BIGINT NOT NULL,
+  FOREIGN KEY (engineer_id) REFERENCES users(id),
+  FOREIGN KEY (actor_id) REFERENCES users(id),
+  INDEX (engineer_id, created_at)
+);
+CREATE TABLE IF NOT EXISTS leave_duty_credits (
+  shift_id CHAR(36) PRIMARY KEY,
+  engineer_id CHAR(36) NOT NULL,
+  units INT NOT NULL,
+  rule_id CHAR(36),
+  revision INT NOT NULL,
+  FOREIGN KEY (shift_id) REFERENCES shifts(id)
+);
+CREATE TABLE IF NOT EXISTS leave_requests (
+  id CHAR(36) PRIMARY KEY,
+  engineer_id CHAR(36) NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  units INT NOT NULL,
+  selection_json JSON NOT NULL,
+  snapshot_json JSON NOT NULL,
+  version INT NOT NULL DEFAULT 1,
+  created_at BIGINT NOT NULL,
+  reviewed_by CHAR(36),
+  review_note VARCHAR(500) NOT NULL DEFAULT '',
+  reviewed_at BIGINT,
+  FOREIGN KEY (engineer_id) REFERENCES users(id),
+  INDEX (engineer_id, status)
+);
+CREATE TABLE IF NOT EXISTS leave_intervals (
+  id CHAR(36) PRIMARY KEY,
+  request_id CHAR(36) NOT NULL,
+  engineer_id CHAR(36) NOT NULL,
+  starts_at BIGINT NOT NULL,
+  ends_at BIGINT NOT NULL,
+  FOREIGN KEY (request_id) REFERENCES leave_requests(id),
+  INDEX (engineer_id, starts_at, ends_at)
+);

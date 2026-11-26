@@ -25,7 +25,8 @@ This is a deployed support-duty roster application. Read `README.md` for product
 - `server/duty-groups.js`, `server/group-service.js`, `src/duty-groups.jsx`: repeated-duty interval expansion, persistence, exceptions, and grouped calendar editing.
 - `server/teams.js`, `src/teams.jsx`: organizational teams, multi-membership management, and team label UI.
 - `docs/DEPLOYMENT.md`, `docs/API.md`: deployment/upgrade/recovery procedures and integration examples.
-- `server/worker.js`: webhook delivery and periodic holiday-feed refresh.
+- `server/worker.js`: webhook delivery, periodic holiday-feed refresh, and completed-duty leave accrual.
+- `server/leave.js`, `src/leave.jsx`, `docs/LEAVE.md`: compensation earning rules, half-day ledger, initialization, applications, approvals, and roster conflicts.
 - `test/`: Node test-runner suites. Roster tests use a disposable SQLite fixture; they do not establish MySQL locking behavior.
 
 ## Development and validation

@@ -463,3 +463,15 @@ td small { color: var(--muted); font-size: 11px; }
   .type-report-table.is-filtered th { white-space: normal; }
   .type-report-table.is-filtered th, .type-report-table.is-filtered td { padding: 12px 8px; }
 }
+
+.leave-stats { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.leave-settings-body { padding: 0 16px 16px; display: grid; gap: 16px; }
+.leave-date-list { max-height: 34dvh; overflow: auto; display: grid; gap: 8px; }
+.leave-date-list p, .leave-preview p { font-size: 13px; overflow-wrap: anywhere; }
+.leave-preview { padding: 12px; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 6px; }
+.leave-checkbox { display: flex; gap: 10px; align-items: start; font-size: 13px; }
+.leave-checkbox input { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
+@media (max-width:680px) {
+  .leave-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .leave-stats .report-stat strong { font-size: 20px; }
+}
