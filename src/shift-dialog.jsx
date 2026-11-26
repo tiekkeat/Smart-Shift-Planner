@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Moon } from 'lucide-react'
 import { api, applyShiftTemplate, dateField, dateLabel, fromField, local, teamColors } from './lib.js'
+import { ShiftTypeField } from './shift-type.jsx'
 import { NewChangeRequest } from './change-request.jsx'
 import { Avatar, Button, Field, Modal, Status, useAction } from './ui.jsx'
 
@@ -18,6 +19,7 @@ function DutyShiftDialog({ session, people, dialog, onClose, onSaved, templates 
   const read = mode === 'read'
   const [overlap, setOverlap] = useState('')
   const [confirmCancel, setConfirmCancel] = useState(false)
+  const [templateId, setTemplateId] = useState(shift.templateId || null)
   const [color, setColor] = useState(shift.color || '')
   const [start, setStart] = useState(dateField(shift.start, timezone))
   const [engineerId, setEngineerId] = useState(shift.engineerId || '')
@@ -37,7 +39,7 @@ function DutyShiftDialog({ session, people, dialog, onClose, onSaved, templates 
       const fields = { allowOverlap, engineerId: values.get('engineerId'), start: fromField(start, timezone), end: fromField(end, timezone) }
       return await api(create ? '/shifts' : '/shifts/' + shift.id, {
         method: create ? 'POST' : 'PUT',
-        body: { ...fields, color: color || null, note: values.get('note'), ...(!create && { version: shift.version }) },
+        body: { ...fields, templateId, color: color || null, note: values.get('note'), ...(!create && { version: shift.version }) },
       })
       } catch (error) {
         if (error.status === 409 && error.message.startsWith('This time overlaps existing duty')) setOverlap(error.message)
@@ -51,17 +53,16 @@ function DutyShiftDialog({ session, people, dialog, onClose, onSaved, templates 
     {read ? <>
       <div className="detail-person"><Avatar name={shift.engineerName} /><strong>{shift.engineerName}</strong></div>
       <dl className="shift-details"><dt>Starts</dt><dd>{dateLabel(shift.start, timezone)}</dd><dt>Ends</dt><dd>{dateLabel(shift.end, timezone)}</dd>
+        <dt>Shift type</dt><dd>{shift.templateName || 'Unclassified'}</dd>
         {shift.note && <><dt>Note</dt><dd>{shift.note}</dd></>}</dl>
       <div className="dialog-footer"><Button variant="secondary" onClick={onClose}>Close</Button>
         {canPropose && <Button onClick={() => onRequest()}>Request change</Button>}</div>
     </> : <form onSubmit={submit} onChange={() => setOverlap('')} className="form-stack">
-      {(create || edit) && !shift.groupId && <Button variant="secondary" onClick={(event) => { const form=event.currentTarget.form; const fields=[...form.querySelectorAll('input[type=datetime-local]')]; if(fields.some(field=>!field.reportValidity())) return; onGroup({ ...shift, engineerId, note:new FormData(form).get('note')||'', start:fromField(start,timezone), end:fromField(end,timezone) }) }}>{create ? 'Create repeated duty group' : 'Convert to repeated duty group'}</Button>}
-      {templates.length > 0 && <Field label="Shift time template" hint="Applies times to the start date above. Review the resulting end date before saving."><select defaultValue="" onChange={(event) => {
-        const template = templates.find((item) => item.id === event.target.value)
-        if (!template) return
-        const values = applyShiftTemplate(template, start || shift.start, timezone)
-        setStart(values.start); setEnd(values.end)
-      }}><option value="">Choose a template (optional)</option>{templates.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.startTime}–{item.endTime}{item.endDayOffset ? ' (+' + item.endDayOffset + ' day)' : ''}</option>)}</select></Field>}
+      {(create || edit) && !shift.groupId && <Button variant="secondary" onClick={(event) => { const form=event.currentTarget.form; const fields=[...form.querySelectorAll('input[type=datetime-local]')]; if(fields.some(field=>!field.reportValidity())) return; onGroup({ ...shift, engineerId, templateId, note:new FormData(form).get('note')||'', start:fromField(start,timezone), end:fromField(end,timezone) }) }}>{create ? 'Create repeated duty group' : 'Convert to repeated duty group'}</Button>}
+      <ShiftTypeField templates={templates} templateId={templateId} currentName={shift.templateName} onChange={template => {
+        setTemplateId(template?.id || null)
+        if (template) { const values = applyShiftTemplate(template, start || shift.start, timezone); setStart(values.start); setEnd(values.end) }
+      }} />
       <Field label="Engineer"><select name="engineerId" value={engineerId} onChange={(event) => setEngineerId(event.target.value)} required>
         <option value="" disabled>Select an engineer</option>
         {assignable.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}

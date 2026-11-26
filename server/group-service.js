@@ -1,3 +1,4 @@
+import { resolveTemplate } from './templates.js'
 import {memberships} from './teams.js'
 import { randomUUID } from 'node:crypto'
 import { DateTime } from 'luxon'
@@ -9,7 +10,7 @@ import { httpError, shiftView } from './domain.js'
 import { id, parse, range, version } from './validation.js'
 
 const inputSchema = dutyGroupSchema.extend({ version: version.optional(), allowOverlap: z.boolean().default(false), confirmRemoveExceptions: z.boolean().default(false), moveDays: z.number().int().min(-3660).max(3660).default(0), sourceShiftId: id.optional(), sourceVersion: version.optional() })
-const selectOccurrences = `SELECT s.*, u.name AS engineer_name FROM shifts s JOIN users u ON u.id=s.engineer_id WHERE s.group_id=? ORDER BY s.occurrence_date, s.starts_at`
+const selectOccurrences = `SELECT s.*, u.name AS engineer_name, t.name AS template_name, t.archived_at AS template_archived_at FROM shifts s JOIN users u ON u.id=s.engineer_id LEFT JOIN shift_templates t ON t.id=s.template_id WHERE s.group_id=? ORDER BY s.occurrence_date, s.starts_at`
 
 export async function readGroup(groupId, run = query, actor = null) {
   const [row] = await run('SELECT * FROM duty_groups WHERE id = ?', [groupId])
@@ -37,7 +38,6 @@ async function cancelOccurrence(run, actor, row) {
 export function saveGroup(actor, input, groupId = null) {
   const fields = parse(inputSchema, input)
   const rule = dutyGroupSchema.parse(fields)
-  const generated = expandDutyGroup(rule)
   if (groupId && fields.sourceShiftId) throw httpError(400, 'Only new groups can convert a continuous shift.')
   return rosterWrite(async run => {
     const gid = groupId || randomUUID()
@@ -48,6 +48,9 @@ export function saveGroup(actor, input, groupId = null) {
       if (row.version !== fields.version) throw httpError(409,'The duty group changed. Refresh and review its latest version.')
       existing = row
     }
+    if (rule.templateId === undefined && existing) rule.templateId = json(existing.rule_json).templateId
+    const generated = expandDutyGroup(rule)
+    await resolveTemplate(run, rule.templateId, existing ? { template_id: json(existing.rule_json).templateId } : null)
     const [engineer] = await run("SELECT id FROM users WHERE id=? AND active=1 AND role='engineer'",[rule.engineerId])
     if (!engineer) throw httpError(400,'Choose an active engineer.')
     if (fields.sourceShiftId) {
@@ -78,7 +81,7 @@ export function saveGroup(actor, input, groupId = null) {
     if (removedExceptions.length && !fields.confirmRemoveExceptions) throw httpError(409,'This range removes individually changed nights: '+removedExceptions.map(row=>row.occurrence_date).join(', ')+'. Confirm removal before saving.')
     const planned = generated.map(item => {
       const before = byDate.get(item.occurrenceDate)
-      return { item: before?.is_exception ? { engineerId:before.engineer_id,start:new Date(Number(before.starts_at)).toISOString(),end:new Date(Number(before.ends_at)).toISOString(),note:before.note,color:before.color,occurrenceDate:before.occurrence_date } : item, before, cancelled: Boolean(before?.is_exception && before.cancelled) }
+      return { item: before?.is_exception ? { engineerId:before.engineer_id,start:new Date(Number(before.starts_at)).toISOString(),end:new Date(Number(before.ends_at)).toISOString(),note:before.note,color:before.color,templateId:before.template_id || null,allowArchivedTemplate:true,occurrenceDate:before.occurrence_date } : item, before, cancelled: Boolean(before?.is_exception && before.cancelled) }
     })
     const active = planned.filter(item => !item.cancelled)
     if (!fields.allowOverlap) for(let i=0;i<active.length;i++) for(let j=i+1;j<active.length;j++) {

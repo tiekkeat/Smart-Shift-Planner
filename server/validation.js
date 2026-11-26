@@ -9,7 +9,7 @@ export const email = z.email().max(254).transform((value) => value.toLowerCase()
 export const password = z.string().min(12).max(128)
 export const note = z.string().trim().max(400).default('')
 export const color = z.enum(['blue', 'purple', 'green', 'orange', 'pink', 'cyan']).nullable().optional()
-export const assignment = z.object({ engineerId: id, start: timestamp, end: timestamp, note, color, allowOverlap: z.boolean().default(false) })
+export const assignment = z.object({ engineerId: id, templateId: id.nullable().optional(), start: timestamp, end: timestamp, note, color, allowOverlap: z.boolean().default(false) })
 export const proposal = assignment.omit({ note: true }).extend({
   shiftId: id, version, swapShiftId: id.optional(), swapVersion: version.optional(), reason: z.string().trim().min(1).max(500),
 })

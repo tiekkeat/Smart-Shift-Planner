@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS shifts (
   id CHAR(36) PRIMARY KEY,
   engineer_id CHAR(36) NOT NULL,
+  template_id CHAR(36) NULL,
   starts_at BIGINT NOT NULL,
   ends_at BIGINT NOT NULL,
   note VARCHAR(500) NOT NULL,
@@ -51,6 +52,8 @@ CREATE TABLE IF NOT EXISTS change_requests (
   starts_at BIGINT NOT NULL,
   ends_at BIGINT NOT NULL,
   original_shift JSON NOT NULL,
+  proposed_template_id CHAR(36) NULL,
+  template_proposed BOOLEAN NOT NULL DEFAULT FALSE,
   swap_shift_id CHAR(36) NULL,
   swap_shift JSON NULL,
   reverted_at BIGINT NULL,
@@ -149,7 +152,8 @@ CREATE TABLE IF NOT EXISTS shift_templates (
   name VARCHAR(80) NOT NULL,
   start_time CHAR(5) NOT NULL,
   end_time CHAR(5) NOT NULL,
-  end_day_offset INT NOT NULL
+  end_day_offset INT NOT NULL,
+  archived_at BIGINT NULL
 );
 
 CREATE TABLE IF NOT EXISTS duty_groups (

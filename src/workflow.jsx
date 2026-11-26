@@ -1,14 +1,10 @@
 import { NewChangeRequest } from './change-request.jsx'
 import { useState } from 'react'
-import { DateTime } from 'luxon'
-import { ArrowRight, BarChart3, Bell, Check, ChevronLeft, ChevronRight, ClipboardList, Clock3, Inbox, Plus } from 'lucide-react'
-import { api, dateLabel, rangeQuery, teamColors } from './lib.js'
+import { ArrowRight, Bell, Check, ClipboardList, Inbox, Plus } from 'lucide-react'
+import { api, dateLabel } from './lib.js'
 import { Avatar, Button, Empty, Field, Loading, Modal, Status, useAction, useResource } from './ui.jsx'
 
 const statuses = { pending: 'warning', approved: 'positive', rejected: 'negative', withdrawn: 'neutral', reverted: 'neutral' }
-const hourNumber = new Intl.NumberFormat('en-MY', { maximumFractionDigits: 2 })
-const hours = (ms) => hourNumber.format(ms / 3_600_000)
-
 function ReviewDialog({ item, timezone, role, onClose, onSaved }) {
   const action = useAction(onSaved)
   const admin = role === 'admin'
@@ -43,7 +39,7 @@ function ReviewDialog({ item, timezone, role, onClose, onSaved }) {
       <span className={'badge self-start badge-' + statuses[item.status]}>{item.status}</span>
       <div className="form-grid compare-grid">
         {[['Original assignment', item.original], ['Proposed assignment', item.proposed]].map(([label, shift]) => <div className="compare-card" key={label}>
-          <small>{label}</small><strong>{shift.engineerName}</strong><span>{dateLabel(shift.start, timezone)}</span><span>to {dateLabel(shift.end, timezone)}</span>
+          <small>{label}</small><small>{shift.templateName || 'Unclassified'}</small><strong>{shift.engineerName}</strong><span>{dateLabel(shift.start, timezone)}</span><span>to {dateLabel(shift.end, timezone)}</span>
         </div>)}
       </div>
       {item.swap && <div className="compare-card"><strong>Shift swap · both assignments change</strong><span>{item.original.engineerName} takes {item.swap.engineerName}'s duty: {dateLabel(item.swap.start, timezone)} → {dateLabel(item.swap.end, timezone)}</span><span>{item.swap.engineerName} takes the original duty: {dateLabel(item.original.start, timezone)} → {dateLabel(item.original.end, timezone)}</span></div>}
@@ -110,48 +106,7 @@ export function ChangesPage({ session, people, onChange, notifyUser }) {
   </>
 }
 
-export function ReportsPage({ session }) {
-  const [mode, setMode] = useState('month')
-  const [cursor, setCursor] = useState(() => DateTime.now().setZone(session.timezone))
-  const start = cursor.startOf(mode)
-  const end = start.plus(mode === 'month' ? { months: 1 } : { weeks: 1 })
-  const search = rangeQuery(start.toUTC().toISO(), end.toUTC().toISO())
-  const resource = useResource((signal) => api('/report' + search, { signal }), search)
-  const rows = resource.data || []
-  const total = rows.reduce((sum, row) => sum + row.durationMs, 0)
-  const max = Math.max(1, ...rows.map((row) => row.durationMs))
-  const label = mode === 'month' ? start.toFormat('LLLL yyyy') : start.toFormat('dd LLL') + ' – ' + end.minus({ days: 1 }).toFormat('dd LLL yyyy')
-
-  function move(amount) {
-    setCursor(cursor.plus(mode === 'month' ? { months: amount } : { weeks: amount }))
-  }
-  return <>
-    <div className="page-heading"><div><h1>Duty hours</h1><p>Review scheduled coverage by engineer and reporting period.</p></div></div>
-    <div className="report-stats">
-      <div className="panel report-stat"><Clock3 size={20} /><span>Scheduled duty hours</span><strong>{resource.data ? hours(total) + ' h' : '—'}</strong></div>
-      <div className="panel report-stat"><ClipboardList size={20} /><span>Shifts in period</span><strong>{resource.data ? rows.reduce((sum, row) => sum + row.shiftCount, 0) : '—'}</strong></div>
-    </div>
-    <section className="panel">
-      <div className="panel-toolbar">
-        <div className="calendar-date">
-          <Button variant="secondary" size="icon" aria-label="Previous reporting period" onClick={() => move(-1)}><ChevronLeft size={17} /></Button>
-          <Button variant="secondary" size="icon" aria-label="Next reporting period" onClick={() => move(1)}><ChevronRight size={17} /></Button>
-          <h2>{label}</h2>
-        </div>
-        <div className="segmented" role="group" aria-label="Reporting period">
-          {['week', 'month'].map((item) => <button key={item} type="button" className="capitalize" aria-pressed={mode === item} onClick={() => setMode(item)}>{item}</button>)}
-        </div>
-      </div>
-      {resource.loading ? <Loading /> : <Status error={resource.error} />}
-      {resource.data && (rows.length ? <div className="table-wrap"><table>
-        <thead><tr><th>Engineer</th><th>Shifts</th><th>Scheduled hours</th></tr></thead>
-        <tbody>{rows.map((row, index) => <tr key={row.engineerId}>
-          <td><div className="person-cell"><Avatar name={row.name} color={teamColors[index % teamColors.length]} /><strong>{row.name}</strong></div></td>
-          <td>{row.shiftCount}</td><td><div className="hours-cell"><div className="bar" aria-hidden="true"><span style={{ width: 100 * row.durationMs / max + '%' }} /></div><strong>{hours(row.durationMs)} h</strong></div></td>
-        </tr>)}</tbody></table></div> : <Empty title="No duty in this period" icon={BarChart3} />)}
-    </section>
-  </>
-}
+export { ReportsPage } from './reports.jsx'
 
 export function NotificationsPage({ notifications, timezone, refresh, error }) {
   const action = useAction(refresh)

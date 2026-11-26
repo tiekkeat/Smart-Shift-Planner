@@ -1,0 +1,4 @@
+interface:
+  display_name: "Smart Workspace Frontend"
+  short_description: "Build apps with the Smart Workspace frontend design"
+  default_prompt: "Use $smart-workspace-frontend to build an application with the Smart Shift Planner layout and design system."

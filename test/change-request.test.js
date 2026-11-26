@@ -62,3 +62,13 @@ test('batch payloads are bounded and retain original single-proposal validation'
     assert.equal(batchProposal.safeParse({ proposals }).success, false)
   }
 })
+
+
+test('time template choices persist requested type while replacements retain the original type', () => {
+  const typed = { ...shift, templateId: randomUUID() }
+  const draft = { ...requestDraft(typed, options.timezone), templateId: randomUUID() }
+  assert.equal(buildProposal(typed, draft, options).templateId, typed.templateId)
+  assert.equal(buildProposal(typed, draft, { ...options, kind: 'dates' }).templateId, draft.templateId)
+  const swap = { id: randomUUID(), version: 1, start: '2045-12-01T10:30Z', end: '2045-12-02T01:00Z', templateId: randomUUID() }
+  assert.equal(buildProposal(typed, { ...draft, swap }, { ...options, kind: 'swap' }).templateId, swap.templateId)
+})

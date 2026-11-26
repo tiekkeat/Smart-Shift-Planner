@@ -1,3 +1,4 @@
+import { registerClassification } from './classification.js'
 import {registerTeams,memberships} from './teams.js'
 import { registerCalendarOrder } from './calendar-order.js'
 import { registerGroups } from './group-service.js'
@@ -128,8 +129,11 @@ export async function buildApp({ logger = true } = {}) {
 
   app.get('/api/app/report', authenticated(['admin','manager','engineer'], async (user, request) => {
     const { startsAt, endsAt } = readRange(request)
-    return report(user, startsAt, endsAt)
+    const templateId = request.query.templateId === undefined ? undefined : request.query.templateId === 'unclassified' ? null : parse(id, request.query.templateId)
+    return report(user, startsAt, endsAt, templateId)
   }))
+
+  registerClassification(app, admin)
 
   app.get('/api/app/changes', authenticated(['admin','manager','engineer'], listChanges))
   app.post('/api/app/changes', authenticated(['engineer'], async (user, request, reply) =>

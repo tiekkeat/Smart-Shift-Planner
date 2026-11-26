@@ -431,3 +431,35 @@ td small { color: var(--muted); font-size: 11px; }
   .request-before-after, .request-swap-result { grid-template-columns: 1fr; gap: 10px; }
   .request-before-after > svg { transform: rotate(90deg); }
 }
+
+.report-toolbar { flex-wrap: wrap; }
+.report-toolbar > .field { min-width: 160px; }
+.report-help { padding: 0 16px 12px; font-size: 12px; color: var(--muted); }
+.type-report-table th { white-space: nowrap; }
+.type-report-table th small { display: block; font-size: 10px; font-weight: 400; }
+.type-report-value { display: grid; gap: 3px; min-width: 85px; font-size: 12px; }
+.type-report-value small { color: var(--muted); }
+.classification-list { max-height: 45dvh; overflow: auto; display: grid; gap: 8px; padding: 2px; }
+.classification-unit { padding: 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px; display: grid; gap: 6px; }
+.classification-choice { display: flex; gap: 10px; align-items: center; cursor: pointer; }
+.classification-choice input { width: 16px; height: 16px; accent-color: var(--accent); flex: none; }
+.classification-choice > span { display: grid; gap: 3px; }
+.classification-choice small, .classification-unit > p { color: var(--muted); }
+.classification-unit details { margin-left: 26px; }
+.classification-unit summary { cursor: pointer; }
+.classification-unit details p { margin-top: 6px; overflow-wrap: anywhere; }
+@media (max-width: 540px) {
+  .report-toolbar .calendar-date { width: 100%; }
+  .report-toolbar > .field { width: 100%; }
+  .report-stats { gap: 8px; }
+  .report-stat { padding: 12px; }
+  .report-stat strong { font-size: 21px; }
+}
+
+@media (max-width: 540px) {
+  .type-report-table.is-filtered .hours-cell { min-width: 0; }
+  .type-report-table.is-filtered .bar, .type-report-table.is-filtered .avatar { display: none; }
+  .type-report-table.is-filtered .person-cell { white-space: normal; overflow-wrap: anywhere; }
+  .type-report-table.is-filtered th { white-space: normal; }
+  .type-report-table.is-filtered th, .type-report-table.is-filtered td { padding: 12px 8px; }
+}

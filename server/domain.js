@@ -26,25 +26,36 @@ export function shiftView(row) {
   return {
     id: row.id, engineerId: row.engineer_id, engineerName: row.engineer_name,
     start: iso(row.starts_at), end: iso(row.ends_at), note: row.note,
+    templateId: row.template_id || null, templateName: row.template_name || null, templateArchived: row.template_archived_at != null,
     ...(row.group_id && { groupId: row.group_id, occurrenceDate: row.occurrence_date, isException: Boolean(row.is_exception) }),
     color: row.color || null, displayOrder: Number(row.display_order ?? row.starts_at), version: row.version, cancelled: Boolean(row.cancelled),
   }
 }
 
-export function dutyTotals(shifts, from, to) {
+export function dutyTotals(shifts, from, to, templateId) {
   const totals = new Map()
   for (const shift of shifts) {
     if (shift.cancelled) continue
+    const typeId = shift.template_id || null
+    if (templateId !== undefined && typeId !== templateId) continue
     const durationMs = Math.min(to, shift.ends_at) - Math.max(from, shift.starts_at)
     if (durationMs <= 0) continue
     if (!totals.has(shift.engineer_id)) {
       totals.set(shift.engineer_id, {
-        engineerId: shift.engineer_id, name: shift.engineer_name, durationMs: 0, shiftCount: 0,
+        engineerId: shift.engineer_id, name: shift.engineer_name, durationMs: 0, shiftCount: 0, types: [],
       })
     }
     const total = totals.get(shift.engineer_id)
     total.durationMs += durationMs
-    total.shiftCount += 1
+    const count = shift.starts_at >= from && shift.starts_at < to ? 1 : 0
+    total.shiftCount += count
+    let type = total.types.find(item => item.templateId === typeId)
+    if (!type) {
+      type = { templateId: typeId, name: shift.template_name || 'Unclassified', archived: shift.template_archived_at != null, shiftCount: 0, durationMs: 0 }
+      total.types.push(type)
+    }
+    type.shiftCount += count
+    type.durationMs += durationMs
   }
   return [...totals.values()].sort((a, b) => b.durationMs - a.durationMs || a.name.localeCompare(b.name))
 }

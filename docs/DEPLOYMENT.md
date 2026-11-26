@@ -102,6 +102,8 @@ docker compose up -d --build
 
 5. Check `docker compose ps -a` and `/api/health`. For full-stack updates, confirm the `migrate` service exited **0** before the API/worker started. Check the affected UI flows and use a browser hard refresh after frontend updates.
 
+The shift-type report upgrade adds nullable type references, archived-template metadata, and proposal type snapshots. Deploy API and web together and run migrations before accepting writes; a frontend-only rollout cannot provide this feature. Existing duties remain Unclassified until an admin confirms a classification preview or a staff member selects a type in the editor. Migration never guesses types or rewrites assignments. Retain the existing data path/volume and secrets in Portainer.
+
 `server/migrate.js` applies repeatable upgrades to existing databases. Editing only `server/schema.sql` does not upgrade an existing table. Keep migration logic with schema changes.
 
 Do not run `docker compose down -v`, delete the `database` volume, change the Compose project name, or regenerate `APP_SECRET` during routine updates. These actions can discard the roster or make stored webhook credentials unreadable.

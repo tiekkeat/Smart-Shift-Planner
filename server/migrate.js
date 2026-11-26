@@ -8,6 +8,15 @@ try {
   for (const statement of sql.split(';').map((part) => part.trim()).filter(Boolean)) {
     await query(statement)
   }
+  for (const [table, column, definition] of [
+    ['shifts', 'template_id', 'CHAR(36) NULL'],
+    ['shift_templates', 'archived_at', 'BIGINT NULL'],
+    ['change_requests', 'proposed_template_id', 'CHAR(36) NULL'],
+    ['change_requests', 'template_proposed', 'BOOLEAN NOT NULL DEFAULT FALSE'],
+  ]) {
+    const [existing] = await query('SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?', [table, column])
+    if (!existing) await query('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition)
+  }
   const [colorColumn] = await query("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shifts' AND COLUMN_NAME = 'color'")
   if (!colorColumn) await query('ALTER TABLE shifts ADD COLUMN color VARCHAR(16) NULL')
   const [displayOrder] = await query("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'shifts' AND COLUMN_NAME = 'display_order'")

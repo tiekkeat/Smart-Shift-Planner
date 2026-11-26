@@ -1,10 +1,11 @@
+import { resolveTemplate } from './templates.js'
 import { expandDutyGroup } from './duty-groups.js'
 import { randomUUID } from 'node:crypto'
 import { query, rosterWrite } from './db.js'
 import { dutyTotals, httpError, interval, iso, rosterTimeZone, shiftView } from './domain.js'
 
-const shiftSelect = `SELECT s.*, u.name AS engineer_name
-  FROM shifts s JOIN users u ON u.id = s.engineer_id`
+const shiftSelect = `SELECT s.*, u.name AS engineer_name, t.name AS template_name, t.archived_at AS template_archived_at
+  FROM shifts s JOIN users u ON u.id = s.engineer_id LEFT JOIN shift_templates t ON t.id = s.template_id`
 
 export const json = (value) => typeof value === 'string' ? JSON.parse(value) : value
 
@@ -80,12 +81,13 @@ async function validateAssignment(run, input, skipId, swapId) {
 
 export async function applyAssignment(run, actor, input, before, swapId, restoreCancelled = false) {
   const { startsAt, endsAt } = await validateAssignment(run, input, before?.id, swapId)
+  const templateId = await resolveTemplate(run, input.templateId, before, input.allowArchivedTemplate)
   const id = before?.id || randomUUID()
-  const values = [input.engineerId, startsAt, endsAt, input.note, input.color === undefined ? (before?.color || null) : input.color, id]
+  const values = [input.engineerId, startsAt, endsAt, input.note, input.color === undefined ? (before?.color || null) : input.color, templateId, id]
   if (before) {
-    await run('UPDATE shifts SET ' + (restoreCancelled ? 'cancelled = 0, ' : '') + 'engineer_id = ?, starts_at = ?, ends_at = ?, note = ?, color = ?, version = version + 1 WHERE id = ?', values)
+    await run('UPDATE shifts SET ' + (restoreCancelled ? 'cancelled = 0, ' : '') + 'engineer_id = ?, starts_at = ?, ends_at = ?, note = ?, color = ?, template_id = ?, version = version + 1 WHERE id = ?', values)
   } else {
-    await run('INSERT INTO shifts (engineer_id, starts_at, ends_at, note, color, id, display_order, group_id, occurrence_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [...values, startsAt, input.groupId || null, input.occurrenceDate || null])
+    await run('INSERT INTO shifts (engineer_id, starts_at, ends_at, note, color, template_id, id, display_order, group_id, occurrence_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [...values, startsAt, input.groupId || null, input.occurrenceDate || null])
   }
   const after = await findShift(run, id)
   await recordShiftChange(run, actor, before ? 'duty.updated' : 'duty.assigned', before, after)
@@ -129,8 +131,8 @@ export async function onCall(at) {
   return row
 }
 
-export async function report(user, from, to) {
-  return dutyTotals(await listShifts(from, to, user.role === 'engineer' ? user.id : null), from, to)
+export async function report(user, from, to, templateId) {
+  return dutyTotals(await listShifts(from, to, user.role === 'engineer' ? user.id : null), from, to, templateId)
 }
 
 async function createChangeRequest(run, user, input) {
@@ -150,17 +152,18 @@ async function createChangeRequest(run, user, input) {
     const [pending] = await run("SELECT id FROM change_requests WHERE (shift_id = ? OR swap_shift_id = ?) AND status = 'pending'", [shiftId, shiftId])
     if (pending) throw httpError(409, 'An open request already exists for one of these assignments.')
   }
+  const proposedTemplateId = await resolveTemplate(run, target ? target.template_id || null : input.templateId, target || current, Boolean(target))
   const { startsAt, endsAt } = await validateAssignment(run, input, current.id, target?.id)
   if (endsAt <= Date.now()) throw httpError(400, 'The requested shift has already ended.')
-  if (startsAt === current.starts_at && endsAt === current.ends_at && input.engineerId === current.engineer_id) {
+  if (startsAt === current.starts_at && endsAt === current.ends_at && input.engineerId === current.engineer_id && proposedTemplateId === (current.template_id || null)) {
     throw httpError(400, 'Change the time or select a different engineer.')
   }
   const id = randomUUID()
   await run(`INSERT INTO change_requests
-    (id, shift_id, requester_id, engineer_id, starts_at, ends_at, original_shift, reason, created_at, swap_shift_id, swap_shift)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    (id, shift_id, requester_id, engineer_id, starts_at, ends_at, original_shift, reason, created_at, swap_shift_id, swap_shift, proposed_template_id, template_proposed)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
     id, current.id, user.id, input.engineerId, startsAt, endsAt,
-    JSON.stringify(shiftView(current)), input.reason, Date.now(), target?.id || null, target ? JSON.stringify({ id: target.id, version: target.version, engineerId: target.engineer_id, engineerName: target.engineer_name, start: iso(target.starts_at), end: iso(target.ends_at) }) : null,
+    JSON.stringify(shiftView(current)), input.reason, Date.now(), target?.id || null, target ? JSON.stringify({ id: target.id, version: target.version, engineerId: target.engineer_id, engineerName: target.engineer_name, start: iso(target.starts_at), end: iso(target.ends_at), templateId: target.template_id || null, templateName: target.template_name || null }) : null, proposedTemplateId, true,
   ])
   const admins = await run("SELECT id FROM users WHERE role = 'admin' AND active = 1")
   await notify(run, admins.map((admin) => admin.id), 'Duty change requested', user.name + ' requested a schedule change.')
@@ -202,8 +205,8 @@ export function requestChanges(user, inputs) {
 
 export async function listChanges(user) {
   const engineer = user.role === 'engineer'
-  const rows = await query(`SELECT c.*, u.name AS requester_name, e.name AS proposed_engineer
-    FROM change_requests c JOIN users u ON u.id = c.requester_id JOIN users e ON e.id = c.engineer_id
+  const rows = await query(`SELECT c.*, u.name AS requester_name, e.name AS proposed_engineer, pt.name AS proposed_template_name
+    FROM change_requests c JOIN users u ON u.id = c.requester_id JOIN users e ON e.id = c.engineer_id LEFT JOIN shift_templates pt ON pt.id = c.proposed_template_id
     ${engineer ? 'WHERE c.requester_id = ?' : ''}
     ORDER BY (c.status = 'pending') DESC, c.created_at DESC LIMIT 200`, engineer ? [user.id] : [])
   return rows.map((row) => ({
@@ -211,7 +214,7 @@ export async function listChanges(user) {
     revertedAt: row.reverted_at ? iso(row.reverted_at) : null, revertNote: row.revert_note,
     reviewNote: row.review_note, createdAt: iso(row.created_at), original: json(row.original_shift),
     swap: row.swap_shift ? json(row.swap_shift) : null,
-    proposed: { engineerName: row.proposed_engineer, start: iso(row.starts_at), end: iso(row.ends_at) },
+    proposed: { engineerName: row.proposed_engineer, start: iso(row.starts_at), end: iso(row.ends_at), templateId: row.template_proposed ? row.proposed_template_id : undefined, templateName: row.proposed_template_name || null },
   }))
 }
 
@@ -234,8 +237,25 @@ export function reviewChange(user, id, decision, note, allowOverlap = false) {
         checkVersion(target, json(request.swap_shift).version)
         if (target.ends_at <= Date.now()) throw httpError(409, 'The swap shift has already ended.')
       }
-      const proposed = { engineerId: request.engineer_id, start: iso(request.starts_at), end: iso(request.ends_at), note: current.note, allowOverlap }
-      const replacement = target && { engineerId: target.engineer_id, start: iso(current.starts_at), end: iso(current.ends_at), note: target.note, allowOverlap }
+      // Pending legacy requests have no type snapshots. Capture the current
+      // classifications while their original versions are still verified.
+      const originalSnapshot = json(request.original_shift)
+      if (!Object.hasOwn(originalSnapshot, 'templateId')) {
+        originalSnapshot.templateId = current.template_id || null
+        originalSnapshot.templateName = current.template_name || null
+        request.original_shift = JSON.stringify(originalSnapshot)
+        await run('UPDATE change_requests SET original_shift=? WHERE id=?', [request.original_shift, request.id])
+      }
+      if (target) {
+        const swapSnapshot = json(request.swap_shift)
+        if (!Object.hasOwn(swapSnapshot, 'templateId')) {
+          swapSnapshot.templateId = target.template_id || null
+          swapSnapshot.templateName = target.template_name || null
+          await run('UPDATE change_requests SET swap_shift=? WHERE id=?', [JSON.stringify(swapSnapshot), request.id])
+        }
+      }
+      const proposed = { engineerId: request.engineer_id, start: iso(request.starts_at), end: iso(request.ends_at), note: current.note, templateId: request.template_proposed ? request.proposed_template_id : target ? target.template_id || null : undefined, allowArchivedTemplate: true, allowOverlap }
+      const replacement = target && { engineerId: target.engineer_id, start: iso(current.starts_at), end: iso(current.ends_at), note: target.note, templateId: json(request.original_shift).templateId, allowArchivedTemplate: true, allowOverlap }
       // Validate both final assignments, excluding only the two exchanged rows.
       await validateAssignment(run, proposed, current.id, target?.id)
       if (target) await validateAssignment(run, replacement, target.id, current.id)
@@ -294,7 +314,7 @@ export function revertChange(user, id, input) {
     }
     const planned = shifts.map(({ original, current }) => ({ original, current, input: {
       engineerId: original.engineerId, start: original.start, end: original.end,
-      note: current.note, color: current.color, allowOverlap: input.allowOverlap,
+      note: current.note, color: current.color, templateId: original.templateId, allowArchivedTemplate: true, allowOverlap: input.allowOverlap,
     } }))
     for (const entry of planned) await validateAssignment(run, entry.input, entry.current.id, planned.find(other => other !== entry)?.current.id)
     for (const entry of planned) {
@@ -302,7 +322,7 @@ export function revertChange(user, id, input) {
       if (entry.current.group_id) {
         const [group] = await run('SELECT rule_json FROM duty_groups WHERE id = ?', [entry.current.group_id])
         const baseline = expandDutyGroup(json(group.rule_json)).find(item => item.occurrenceDate === entry.current.occurrence_date)
-        const matchesRule = baseline && baseline.engineerId === entry.input.engineerId && Date.parse(baseline.start) === Date.parse(entry.input.start) && Date.parse(baseline.end) === Date.parse(entry.input.end) && (baseline.note || '') === (entry.input.note || '') && (baseline.color || null) === (entry.input.color || null)
+        const matchesRule = baseline && baseline.engineerId === entry.input.engineerId && Date.parse(baseline.start) === Date.parse(entry.input.start) && Date.parse(baseline.end) === Date.parse(entry.input.end) && (baseline.note || '') === (entry.input.note || '') && (baseline.color || null) === (entry.input.color || null) && (baseline.templateId || null) === (entry.input.templateId === undefined ? entry.current.template_id || null : entry.input.templateId)
         await run('UPDATE shifts SET is_exception = ? WHERE id = ?', [entry.original.isException || !matchesRule ? 1 : 0, entry.current.id])
         await run('UPDATE duty_groups SET version = version + 1 WHERE id = ?', [entry.current.group_id])
       }

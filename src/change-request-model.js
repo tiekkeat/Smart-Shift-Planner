@@ -8,7 +8,7 @@ export const changeKinds = [
 ]
 
 export function requestDraft(shift, timezone) {
-  return { start: dateField(shift.start, timezone), end: dateField(shift.end, timezone), engineerId: '', editTimes: false, swap: null, searchDate: dateField(shift.start, timezone).slice(0, 10) }
+  return { templateId: shift.templateId || null, templateName: shift.templateName, start: dateField(shift.start, timezone), end: dateField(shift.end, timezone), engineerId: '', editTimes: false, swap: null, searchDate: dateField(shift.start, timezone).slice(0, 10) }
 }
 
 export function buildProposal(shift, draft, { kind, replacementId, individual, timezone, userId, reason = '' }) {
@@ -19,11 +19,12 @@ export function buildProposal(shift, draft, { kind, replacementId, individual, t
   const editTimes = kind === 'dates' || (kind === 'replace' && draft.editTimes)
   const start = swapping ? draft.swap.start : editTimes ? fromField(draft.start, timezone) : shift.start
   const end = swapping ? draft.swap.end : editTimes ? fromField(draft.end, timezone) : shift.end
+  const templateId = swapping ? draft.swap.templateId || null : editTimes ? draft.templateId : shift.templateId
   if (Date.parse(end) <= Date.parse(start)) throw new Error('End must follow start.')
   if (Date.parse(end) - Date.parse(start) > 7 * 86400000) throw new Error('A duty can span up to 7 days.')
   if (Date.parse(end) <= Date.now()) throw new Error('Choose a duty that has not ended.')
-  if (engineerId === shift.engineerId && Date.parse(start) === Date.parse(shift.start) && Date.parse(end) === Date.parse(shift.end)) throw new Error('Choose new dates or a different engineer.')
-  return { shiftId: shift.id, version: shift.version, engineerId, start, end, reason,
+  if (engineerId === shift.engineerId && Date.parse(start) === Date.parse(shift.start) && Date.parse(end) === Date.parse(shift.end) && (templateId || null) === (shift.templateId || null)) throw new Error('Choose new dates or a different engineer.')
+  return { shiftId: shift.id, version: shift.version, engineerId, start, end, templateId, reason,
     ...(swapping && { swapShiftId: draft.swap.id, swapVersion: draft.swap.version }),
   }
 }

@@ -1,3 +1,4 @@
+import { ShiftTypeField } from './shift-type.jsx'
 import { useState } from 'react'
 import { DateTime } from 'luxon'
 import { api, dateLabel, local, teamColors } from './lib.js'
@@ -6,7 +7,7 @@ const days=['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
 export function groupRule(shift,timezone) {
   const first=local(shift.start,timezone),end=local(shift.end,timezone)
   const last=end.hour===0&&end.minute===0?end.minus({days:1}):end.hour<first.hour?end.minus({days:1}):end
-  return {engineerId:shift.engineerId||'',firstDate:first.toISODate(),lastDate:last<first?first.toISODate():last.toISODate(),weekdays:[1,2,3,4,5],startTime:first.toFormat('HH:mm'),endTime:end.toFormat('HH:mm'),endDayOffset:1,timezone,note:shift.note||'',color:shift.color||null}
+  return {templateId:shift.templateId||null,engineerId:shift.engineerId||'',firstDate:first.toISODate(),lastDate:last<first?first.toISODate():last.toISODate(),weekdays:[1,2,3,4,5],startTime:first.toFormat('HH:mm'),endTime:end.toFormat('HH:mm'),endDayOffset:1,timezone,note:shift.note||'',color:shift.color||null}
 }
 function preview(rule) {
   const first=DateTime.fromISO(rule.firstDate,{zone:rule.timezone}),last=DateTime.fromISO(rule.lastDate,{zone:rule.timezone})
@@ -50,7 +51,7 @@ export function GroupDialog({dialog,session,people,templates,onClose,onSaved,onO
       <Field label="Engineer"><select required value={rule.engineerId} onChange={e=>setRule({...rule,engineerId:e.target.value})}><option value="">Select an engineer</option>{people.filter(p=>p.role==='engineer'&&p.active).map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></Field>
       <div className="form-grid"><Field label="First start date"><input type="date" required value={rule.firstDate} onChange={e=>setRule({...rule,firstDate:e.target.value})}/></Field><Field label="Last start date"><input type="date" required value={rule.lastDate} onChange={e=>setRule({...rule,lastDate:e.target.value})}/></Field></div>
       <fieldset className="scope-list"><legend>Duty starts on</legend><div className="heading-actions">{days.map((label,index)=><label className="checkbox" key={label}><input type="checkbox" checked={rule.weekdays.includes(index+1)} onChange={e=>setRule({...rule,weekdays:e.target.checked?[...rule.weekdays,index+1].sort():rule.weekdays.filter(day=>day!==index+1)})}/>{label}</label>)}</div></fieldset>
-      {templates.length>0&&<Field label="Shift time template"><select defaultValue="" onChange={e=>{const t=templates.find(t=>t.id===e.target.value);if(t)setRule({...rule,startTime:t.startTime,endTime:t.endTime,endDayOffset:t.endDayOffset})}}><option value="">Choose a template</option>{templates.filter(t=>t.endDayOffset<=1).map(t=><option key={t.id} value={t.id}>{t.name}</option>)}</select></Field>}
+      <ShiftTypeField templates={templates.filter(template => template.endDayOffset <= 1)} templateId={rule.templateId} currentName={occurrences.find(item => item.templateId === rule.templateId)?.templateName} onChange={template => setRule({ ...rule, templateId: template?.id || null, ...(template && { startTime: template.startTime, endTime: template.endTime, endDayOffset: template.endDayOffset }) })} />
       <div className="form-grid"><Field label="Starts at"><input required type="time" value={rule.startTime} onChange={e=>setRule({...rule,startTime:e.target.value})}/></Field><Field label="Ends at"><input required type="time" value={rule.endTime} onChange={e=>setRule({...rule,endTime:e.target.value})}/></Field></div>
       <Field label="End day"><select value={rule.endDayOffset} onChange={e=>setRule({...rule,endDayOffset:Number(e.target.value)})}><option value={0}>Same day</option><option value={1}>Next day</option></select></Field>
       <Field label="Shift color"><select value={rule.color||''} onChange={e=>setRule({...rule,color:e.target.value||null})}><option value="">Automatic (engineer color)</option>{teamColors.map(c=><option key={c} value={c}>{c}</option>)}</select></Field>
